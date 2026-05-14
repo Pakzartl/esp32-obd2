@@ -1,0 +1,11 @@
+menu "ADV350 Configuration"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+
+    config WIFI_PASS
+        string "WiFi Password"
+        default "mypassword"
+
+endmenu
