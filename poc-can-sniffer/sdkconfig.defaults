@@ -15,3 +15,6 @@ CONFIG_BOOTLOADER_WDT_TIME_MS=9000
 # WiFi credentials (override in sdkconfig.local)
 CONFIG_WIFI_SSID="myssid"
 CONFIG_WIFI_PASS="mypassword"
+
+# BLE disabled for now (ESP32 RAM not enough for WiFi+BLE concurrent)
+# CONFIG_BT_ENABLED=y

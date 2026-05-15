@@ -158,7 +158,7 @@ static void wifi_init_sta(void)
     esp_wifi_connect();
 }
 
-// ── OTA Rollback Check ──
+// ── OTA Rollback ──
 
 static void ota_rollback_check(void)
 {
@@ -242,11 +242,10 @@ void app_main(void)
 
     ESP_LOGI(TAG, "=== ADV350 CAN Sniffer + OTA ===");
 
-    // Phase 1: WiFi + OTA window
+    // WiFi + OTA
     ESP_LOGI(TAG, "Connecting to WiFi '%s'...", WIFI_SSID);
     wifi_init_sta();
 
-    // Wait for WiFi (max 10s)
     for (int i = 0; i < 20 && !wifi_connected; i++) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
@@ -267,12 +266,12 @@ void app_main(void)
             httpd_uri_t update = { .uri = "/update", .method = HTTP_POST, .handler = ota_update_handler };
             httpd_register_uri_handler(server, &page);
             httpd_register_uri_handler(server, &update);
-            ESP_LOGI(TAG, "OTA web server running — upload anytime at http://" IPSTR, IP2STR(&wifi_ip));
+            ESP_LOGI(TAG, "OTA web server running at http://" IPSTR, IP2STR(&wifi_ip));
         }
     } else {
-        ESP_LOGW(TAG, "WiFi not connected - OTA unavailable, CAN sniffer only");
+        ESP_LOGW(TAG, "WiFi not connected - OTA unavailable");
     }
 
-    // Phase 2: CAN sniffer
+    // CAN sniffer
     xTaskCreate(can_sniffer_task, "can_sniffer", 4096, NULL, 5, NULL);
 }
