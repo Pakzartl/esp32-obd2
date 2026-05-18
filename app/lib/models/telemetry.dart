@@ -47,16 +47,21 @@ class Telemetry {
       );
 
   factory Telemetry.fromBleData(List<int> data) {
-    if (data.length < 10) {
+    if (data.length < 5) {
       return Telemetry.empty();
     }
+    // Raw CAN frame: [ID(4 LE)][DLC(1)][DATA(0-8)]
+    final canId = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
+    final dlc = data[4];
+    final canData = data.length > 5 ? data.sublist(5) : <int>[];
+
     return Telemetry(
-      rpm: (data[0] << 8) | data[1],
-      speed: (data[2] << 8) | data[3],
-      throttle: data[4],
-      coolantTemp: data[5] - 40,
-      gear: data[6],
-      fuelLevel: data[7],
+      rpm: canId,
+      speed: dlc,
+      throttle: canData.isNotEmpty ? canData[0] : 0,
+      coolantTemp: canData.length > 1 ? canData[1] : 0,
+      gear: canData.length > 2 ? canData[2] : 0,
+      fuelLevel: canData.length > 3 ? canData[3] : 0,
       timestamp: DateTime.now(),
     );
   }

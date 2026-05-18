@@ -16,6 +16,9 @@ class _ScanScreenState extends State<ScanScreen> {
   bool _scanning = false;
 
   Future<void> _startScan() async {
+    // Request BLE permissions on Android
+    await FlutterBluePlus.turnOn();
+
     setState(() {
       _scanning = true;
       _results = [];

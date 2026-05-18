@@ -28,6 +28,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
+    widget.bleService.startLiveNotify();
     _telemetrySub = widget.bleService.telemetryStream.listen((t) {
       setState(() => _current = t);
       if (_recording) {
@@ -67,6 +68,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
         backgroundColor: Colors.black87,
         foregroundColor: Colors.white,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.sensors),
+            tooltip: 'Ping',
+            onPressed: () async {
+              final ok = await widget.bleService.ping();
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(ok ? 'Ping OK — LED blink' : 'Ping failed'),
+                    duration: const Duration(seconds: 1),
+                  ),
+                );
+              }
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.history),
             onPressed: () => Navigator.push(
@@ -131,46 +147,46 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 childAspectRatio: 1.2,
                 children: [
                   GaugeCard(
-                    label: 'RPM',
-                    value: '${_current.rpm}',
-                    unit: 'rpm',
-                    icon: Icons.speed,
+                    label: 'CAN ID',
+                    value: '0x${_current.rpm.toRadixString(16).toUpperCase()}',
+                    unit: '',
+                    icon: Icons.memory,
                     color: Colors.orange,
                   ),
                   GaugeCard(
-                    label: 'Speed',
+                    label: 'DLC',
                     value: '${_current.speed}',
-                    unit: 'km/h',
-                    icon: Icons.motorcycle,
+                    unit: 'bytes',
+                    icon: Icons.data_usage,
                     color: Colors.blue,
                   ),
                   GaugeCard(
-                    label: 'Throttle',
-                    value: '${_current.throttle}',
-                    unit: '%',
-                    icon: Icons.gas_meter,
+                    label: 'Byte 0',
+                    value: '0x${_current.throttle.toRadixString(16).toUpperCase().padLeft(2, '0')}',
+                    unit: '',
+                    icon: Icons.grid_view,
                     color: Colors.green,
                   ),
                   GaugeCard(
-                    label: 'Coolant',
-                    value: '${_current.coolantTemp}',
-                    unit: '°C',
-                    icon: Icons.thermostat,
-                    color: _current.coolantTemp > 100 ? Colors.red : Colors.cyan,
+                    label: 'Byte 1',
+                    value: '0x${_current.coolantTemp.toRadixString(16).toUpperCase().padLeft(2, '0')}',
+                    unit: '',
+                    icon: Icons.grid_view,
+                    color: Colors.cyan,
                   ),
                   GaugeCard(
-                    label: 'Gear',
-                    value: _current.gear == 0 ? 'N' : '${_current.gear}',
+                    label: 'Byte 2',
+                    value: '0x${_current.gear.toRadixString(16).toUpperCase().padLeft(2, '0')}',
                     unit: '',
-                    icon: Icons.settings,
+                    icon: Icons.grid_view,
                     color: Colors.purple,
                   ),
                   GaugeCard(
-                    label: 'Fuel',
-                    value: '${_current.fuelLevel}',
-                    unit: '%',
-                    icon: Icons.local_gas_station,
-                    color: _current.fuelLevel < 20 ? Colors.red : Colors.amber,
+                    label: 'Byte 3',
+                    value: '0x${_current.fuelLevel.toRadixString(16).toUpperCase().padLeft(2, '0')}',
+                    unit: '',
+                    icon: Icons.grid_view,
+                    color: Colors.amber,
                   ),
                 ],
               ),

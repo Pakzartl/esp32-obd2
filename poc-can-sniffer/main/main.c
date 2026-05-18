@@ -30,13 +30,12 @@ static const char *TAG = "ADV350";
 #define CAN_RX_GPIO    GPIO_NUM_27
 #define MODE_BTN_GPIO  GPIO_NUM_0
 #define MODE_HOLD_MS   5000
+#define LED_GPIO       GPIO_NUM_5
 
 typedef enum { MODE_DEV, MODE_PROD } app_mode_t;
 
 static app_mode_t current_mode;
 static volatile bool ota_in_progress = false;
-
-// TODO: ble_notify_can_frame will be re-enabled when GATT service is fixed
 
 // ── Mode Detection ──
 
@@ -90,7 +89,13 @@ static void mode_switch_task(void *arg)
                     nvs_close(nvs);
                 }
 
-                vTaskDelay(pdMS_TO_TICKS(500));
+                for (int i = 0; i < 2; i++) {
+                    gpio_set_level(LED_GPIO, 1);
+                    vTaskDelay(pdMS_TO_TICKS(30));
+                    gpio_set_level(LED_GPIO, 0);
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                }
+                vTaskDelay(pdMS_TO_TICKS(200));
                 esp_restart();
             }
         }
@@ -267,6 +272,8 @@ static void ota_rollback_check(void)
     }
 }
 
+static void ble_notify_can_frame(const twai_message_t *msg);
+
 // ── CAN Sniffer ──
 
 static void can_sniffer_task(void *arg)
@@ -308,7 +315,7 @@ static void can_sniffer_task(void *arg)
             if (msg.rtr) printf("(RTR)");
             printf("\n");
 
-            // TODO: BLE notify when GATT service is fixed
+            ble_notify_can_frame(&msg);
         }
 
         int64_t now = esp_timer_get_time();
@@ -366,6 +373,98 @@ static uint16_t ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 
 #define BLE_DEVICE_NAME "ADV350"
 
+// ── GATT CAN Service ──
+
+static const ble_uuid128_t can_svc_uuid =
+    BLE_UUID128_INIT(0xf0, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12,
+                     0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
+
+static const ble_uuid128_t can_frame_chr_uuid =
+    BLE_UUID128_INIT(0xf1, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12,
+                     0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
+
+static const ble_uuid128_t can_ctrl_chr_uuid =
+    BLE_UUID128_INIT(0xf2, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12,
+                     0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
+
+static uint16_t can_frame_chr_handle;
+static volatile bool ble_live_notify = false;
+
+static int can_frame_chr_access(uint16_t conn_handle, uint16_t attr_handle,
+                                struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
+        uint8_t status = ble_live_notify ? 1 : 0;
+        os_mbuf_append(ctxt->om, &status, sizeof(status));
+    }
+    return 0;
+}
+
+static int can_ctrl_chr_access(uint16_t conn_handle, uint16_t attr_handle,
+                               struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
+        uint8_t val = ble_live_notify ? 1 : 0;
+        os_mbuf_append(ctxt->om, &val, sizeof(val));
+    } else if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
+        uint8_t val;
+        if (OS_MBUF_PKTLEN(ctxt->om) == 1) {
+            os_mbuf_copydata(ctxt->om, 0, 1, &val);
+            if (val == 0x02) {
+                ESP_LOGI(TAG, "BLE: ping — blink LED");
+                for (int i = 0; i < 3; i++) {
+                    gpio_set_level(LED_GPIO, 1);
+                    vTaskDelay(pdMS_TO_TICKS(30));
+                    gpio_set_level(LED_GPIO, 0);
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                }
+            } else {
+                ble_live_notify = (val != 0);
+                ESP_LOGI(TAG, "BLE: CAN live notify %s", ble_live_notify ? "ON" : "OFF");
+            }
+        }
+    }
+    return 0;
+}
+
+static const struct ble_gatt_svc_def gatt_svcs[] = {
+    {
+        .type = BLE_GATT_SVC_TYPE_PRIMARY,
+        .uuid = &can_svc_uuid.u,
+        .characteristics = (struct ble_gatt_chr_def[]) {
+            {
+                .uuid = &can_frame_chr_uuid.u,
+                .access_cb = can_frame_chr_access,
+                .val_handle = &can_frame_chr_handle,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+            },
+            {
+                .uuid = &can_ctrl_chr_uuid.u,
+                .access_cb = can_ctrl_chr_access,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+            },
+            { 0 },
+        },
+    },
+    { 0 },
+};
+
+static void ble_notify_can_frame(const twai_message_t *msg)
+{
+    if (ble_conn_handle == BLE_HS_CONN_HANDLE_NONE || !ble_live_notify) return;
+
+    uint8_t buf[13];
+    uint32_t id = msg->identifier;
+    memcpy(buf, &id, 4);
+    buf[4] = msg->data_length_code;
+    memcpy(&buf[5], msg->data, msg->data_length_code);
+
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(buf, 5 + msg->data_length_code);
+    if (om) {
+        ble_gatts_notify_custom(ble_conn_handle, can_frame_chr_handle, om);
+    }
+}
+
 static void ble_advertise(void);
 
 static int ble_gap_event(struct ble_gap_event *event, void *arg)
@@ -381,29 +480,41 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
         break;
     case BLE_GAP_EVENT_DISCONNECT:
         ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-        // TODO: ble_live_notify = false;
+        ble_live_notify = false;
         ESP_LOGI(TAG, "BLE: disconnected");
         ble_advertise();
         break;
     case BLE_GAP_EVENT_SUBSCRIBE:
-        ESP_LOGI(TAG, "BLE: subscribe event");
+        if (event->subscribe.attr_handle == can_frame_chr_handle) {
+            ble_live_notify = event->subscribe.cur_notify;
+            ESP_LOGI(TAG, "BLE: CAN notify %s", ble_live_notify ? "ON" : "OFF");
+        }
         break;
     case BLE_GAP_EVENT_MTU:
         ESP_LOGI(TAG, "BLE: MTU=%d", event->mtu.value);
         break;
-    case BLE_GAP_EVENT_ENC_CHANGE:
-        ESP_LOGI(TAG, "BLE: encryption change, status=%d", event->enc_change.status);
-        break;
-    case BLE_GAP_EVENT_PASSKEY_ACTION: {
-        struct ble_sm_io pkey = {0};
-        pkey.action = event->passkey.params.action;
-        if (pkey.action == BLE_SM_IOACT_DISP) {
-            pkey.passkey = 1593107;
-            ESP_LOGI(TAG, "BLE: displaying passkey: %lu", (unsigned long)pkey.passkey);
-            ble_sm_inject_io(event->passkey.conn_handle, &pkey);
+    case BLE_GAP_EVENT_ENC_CHANGE: {
+        ESP_LOGI(TAG, "BLE: enc_change status=%d", event->enc_change.status);
+        struct ble_gap_conn_desc desc;
+        if (ble_gap_conn_find(event->enc_change.conn_handle, &desc) == 0) {
+            ESP_LOGI(TAG, "BLE: encrypted=%d authenticated=%d bonded=%d",
+                     desc.sec_state.encrypted,
+                     desc.sec_state.authenticated,
+                     desc.sec_state.bonded);
         }
         break;
     }
+    case BLE_GAP_EVENT_REPEAT_PAIRING: {
+        struct ble_gap_conn_desc desc;
+        if (ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc) == 0) {
+            ble_store_util_delete_peer(&desc.peer_id_addr);
+            ESP_LOGI(TAG, "BLE: deleted stale bond, retrying pairing");
+        }
+        return BLE_GAP_REPEAT_PAIRING_RETRY;
+    }
+    case BLE_GAP_EVENT_PASSKEY_ACTION:
+        ESP_LOGW(TAG, "BLE: unexpected passkey action=%d", event->passkey.params.action);
+        return BLE_HS_ENOTSUP;
     }
     return 0;
 }
@@ -453,24 +564,23 @@ static void ble_init(void)
     ble_svc_gap_device_name_set(BLE_DEVICE_NAME);
     ble_svc_gap_init();
     ble_svc_gatt_init();
-    ESP_LOGI(TAG, "BLE: GAP+GATT init OK");
+
+    ble_gatts_count_cfg(gatt_svcs);
+    ble_gatts_add_svcs(gatt_svcs);
+    ESP_LOGI(TAG, "BLE: GAP+GATT+CAN service init OK");
 
     ble_hs_cfg.sync_cb = ble_on_sync;
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
 
     ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO;
-    ble_hs_cfg.sm_bonding = 1;
+    ble_hs_cfg.sm_bonding = 0;
     ble_hs_cfg.sm_mitm = 0;
-    ble_hs_cfg.sm_sc = 1;
-    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC;
-    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC;
+    ble_hs_cfg.sm_sc = 0;
 
     ESP_LOGI(TAG, "BLE: starting host task...");
     nimble_port_freertos_init(ble_host_task);
     ESP_LOGI(TAG, "BLE: host task started");
 }
-
-// TODO: ble_notify_can_frame — re-enable when GATT service is fixed
 
 // ── PROD Mode (BLE + CAN) ──
 
@@ -484,6 +594,9 @@ static void start_prod_mode(void)
     ESP_LOGI(TAG, "Free heap after BLE: %lu", (unsigned long)esp_get_free_heap_size());
 
     xTaskCreate(can_sniffer_task, "can_sniffer", 4096, NULL, 5, NULL);
+
+    gpio_set_level(LED_GPIO, 1);
+    ESP_LOGI(TAG, "LED off (GPIO%d)", LED_GPIO);
 }
 
 // ── Main ──
@@ -499,6 +612,16 @@ void app_main(void)
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    gpio_reset_pin(LED_GPIO);
+    gpio_config_t led_cfg = {
+        .pin_bit_mask = (1ULL << LED_GPIO),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    };
+    gpio_config(&led_cfg);
+    gpio_set_level(LED_GPIO, 1);
 
     ota_rollback_check();
 
