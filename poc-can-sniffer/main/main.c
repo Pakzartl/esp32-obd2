@@ -3,6 +3,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/twai.h"
+#include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -11,7 +12,15 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "mdns.h"
+#include "host/ble_hs.h"
+#include "host/util/util.h"
+#include "nimble/nimble_port.h"
+#include "nimble/nimble_port_freertos.h"
+#include "services/gap/ble_svc_gap.h"
+#include "services/gatt/ble_svc_gatt.h"
+#include "host/ble_store.h"
 
 static const char *TAG = "ADV350";
 
@@ -19,23 +28,104 @@ static const char *TAG = "ADV350";
 #define WIFI_PASS      CONFIG_WIFI_PASS
 #define CAN_TX_GPIO    GPIO_NUM_26
 #define CAN_RX_GPIO    GPIO_NUM_27
+#define MODE_BTN_GPIO  GPIO_NUM_0
+#define MODE_HOLD_MS   5000
 
+typedef enum { MODE_DEV, MODE_PROD } app_mode_t;
+
+static app_mode_t current_mode;
 static volatile bool ota_in_progress = false;
 
-// ── OTA HTML page ──
+// TODO: ble_notify_can_frame will be re-enabled when GATT service is fixed
+
+// ── Mode Detection ──
+
+static app_mode_t get_default_mode(void)
+{
+#ifdef CONFIG_DEFAULT_MODE_PROD
+    return MODE_PROD;
+#else
+    return MODE_DEV;
+#endif
+}
+
+static bool is_button_held(int ms)
+{
+    gpio_config_t cfg = {
+        .pin_bit_mask = (1ULL << MODE_BTN_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    };
+    gpio_config(&cfg);
+
+    int held = 0;
+    while (held < ms) {
+        if (gpio_get_level(MODE_BTN_GPIO) == 0) {
+            held += 50;
+        } else {
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    return true;
+}
+
+// ── Mode Switch via Button Task ──
+
+static void mode_switch_task(void *arg)
+{
+    while (1) {
+        if (gpio_get_level(MODE_BTN_GPIO) == 0) {
+            ESP_LOGI(TAG, "IO0 pressed — hold 5s to switch mode...");
+            if (is_button_held(MODE_HOLD_MS)) {
+                app_mode_t new_mode = (current_mode == MODE_DEV) ? MODE_PROD : MODE_DEV;
+                ESP_LOGI(TAG, "Switching to %s mode — rebooting...",
+                         new_mode == MODE_DEV ? "DEV" : "PROD");
+
+                nvs_handle_t nvs;
+                if (nvs_open("config", NVS_READWRITE, &nvs) == ESP_OK) {
+                    nvs_set_u8(nvs, "mode", (uint8_t)new_mode);
+                    nvs_commit(nvs);
+                    nvs_close(nvs);
+                }
+
+                vTaskDelay(pdMS_TO_TICKS(500));
+                esp_restart();
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+}
+
+static app_mode_t load_mode(void)
+{
+    nvs_handle_t nvs;
+    uint8_t mode_val;
+    if (nvs_open("config", NVS_READONLY, &nvs) == ESP_OK) {
+        if (nvs_get_u8(nvs, "mode", &mode_val) == ESP_OK) {
+            nvs_close(nvs);
+            return (mode_val == MODE_PROD) ? MODE_PROD : MODE_DEV;
+        }
+        nvs_close(nvs);
+    }
+    return get_default_mode();
+}
+
+// ── OTA ──
 
 static const char ota_html[] =
     "<!DOCTYPE html><html><head><title>ADV350 OTA</title>"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
     "<style>body{font-family:sans-serif;text-align:center;padding:2em}"
-    "h1{color:#333}input{margin:1em}button{padding:0.8em 2em;font-size:1.2em}</style></head>"
+    "h1{color:#333}input{margin:1em}button{padding:0.8em 2em;font-size:1.2em}"
+    ".mode{background:#e0f0ff;padding:0.5em;border-radius:8px;margin:1em}</style></head>"
     "<body><h1>ADV350 OTA Update</h1>"
+    "<div class='mode'>Mode: DEV (WiFi + OTA)</div>"
     "<form method='POST' action='/update' enctype='multipart/form-data'>"
     "<input type='file' name='firmware' accept='.bin'><br>"
     "<button type='submit'>Upload Firmware</button></form>"
-    "<p id='status'></p></body></html>";
-
-// ── OTA Handlers ──
+    "<p>Hold IO0 button 5s to switch to PROD mode</p></body></html>";
 
 static esp_err_t ota_page_handler(httpd_req_t *req)
 {
@@ -136,8 +226,6 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
 
 static void wifi_init_sta(void)
 {
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -219,6 +307,8 @@ static void can_sniffer_task(void *arg)
             if (msg.extd) printf("(EXT)");
             if (msg.rtr) printf("(RTR)");
             printf("\n");
+
+            // TODO: BLE notify when GATT service is fixed
         }
 
         int64_t now = esp_timer_get_time();
@@ -232,17 +322,12 @@ static void can_sniffer_task(void *arg)
     }
 }
 
-// ── Main ──
+// ── DEV Mode (WiFi + OTA + CAN) ──
 
-void app_main(void)
+static void start_dev_mode(void)
 {
-    ESP_ERROR_CHECK(nvs_flash_init());
+    ESP_LOGI(TAG, "=== DEV MODE (WiFi + OTA + CAN) ===");
 
-    ota_rollback_check();
-
-    ESP_LOGI(TAG, "=== ADV350 CAN Sniffer + OTA ===");
-
-    // WiFi + OTA
     ESP_LOGI(TAG, "Connecting to WiFi '%s'...", WIFI_SSID);
     wifi_init_sta();
 
@@ -272,6 +357,140 @@ void app_main(void)
         ESP_LOGW(TAG, "WiFi not connected - OTA unavailable");
     }
 
-    // CAN sniffer
     xTaskCreate(can_sniffer_task, "can_sniffer", 4096, NULL, 5, NULL);
+}
+
+// ── BLE (PROD mode only — no WiFi) ──
+
+static uint16_t ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+
+#define BLE_DEVICE_NAME "ADV350"
+
+static void ble_advertise(void);
+
+static int ble_gap_event(struct ble_gap_event *event, void *arg)
+{
+    switch (event->type) {
+    case BLE_GAP_EVENT_CONNECT:
+        if (event->connect.status == 0) {
+            ble_conn_handle = event->connect.conn_handle;
+            ESP_LOGI(TAG, "BLE: connected");
+        } else {
+            ble_advertise();
+        }
+        break;
+    case BLE_GAP_EVENT_DISCONNECT:
+        ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        // TODO: ble_live_notify = false;
+        ESP_LOGI(TAG, "BLE: disconnected");
+        ble_advertise();
+        break;
+    case BLE_GAP_EVENT_SUBSCRIBE:
+        ESP_LOGI(TAG, "BLE: subscribe event");
+        break;
+    case BLE_GAP_EVENT_MTU:
+        ESP_LOGI(TAG, "BLE: MTU=%d", event->mtu.value);
+        break;
+    }
+    return 0;
+}
+
+static void ble_advertise(void)
+{
+    struct ble_gap_adv_params adv_params = {0};
+    struct ble_hs_adv_fields fields = {0};
+
+    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+    fields.name = (uint8_t *)BLE_DEVICE_NAME;
+    fields.name_len = strlen(BLE_DEVICE_NAME);
+    fields.name_is_complete = 1;
+    fields.tx_pwr_lvl_is_present = 1;
+    fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;
+
+    ble_gap_adv_set_fields(&fields);
+
+    adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
+    adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+    ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER, &adv_params, ble_gap_event, NULL);
+}
+
+static void ble_on_sync(void)
+{
+    ESP_LOGI(TAG, "BLE: on_sync called, starting advertise...");
+    ble_advertise();
+    ESP_LOGI(TAG, "BLE: advertising as '%s'", BLE_DEVICE_NAME);
+}
+
+static void ble_host_task(void *param)
+{
+    nimble_port_run();
+    nimble_port_freertos_deinit();
+}
+
+static void ble_init(void)
+{
+    ESP_LOGI(TAG, "BLE: nimble_port_init...");
+    esp_err_t ret = nimble_port_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "BLE: nimble_port_init failed: %s", esp_err_to_name(ret));
+        return;
+    }
+    ESP_LOGI(TAG, "BLE: nimble_port_init OK");
+
+    ble_svc_gap_device_name_set(BLE_DEVICE_NAME);
+    ble_svc_gap_init();
+    ble_svc_gatt_init();
+    ESP_LOGI(TAG, "BLE: GAP+GATT init OK");
+
+    ble_hs_cfg.sync_cb = ble_on_sync;
+    ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
+
+    ESP_LOGI(TAG, "BLE: starting host task...");
+    nimble_port_freertos_init(ble_host_task);
+    ESP_LOGI(TAG, "BLE: host task started");
+}
+
+// TODO: ble_notify_can_frame — re-enable when GATT service is fixed
+
+// ── PROD Mode (BLE + CAN) ──
+
+static void start_prod_mode(void)
+{
+    ESP_LOGI(TAG, "=== PROD MODE (BLE + CAN) ===");
+
+    ESP_LOGI(TAG, "Free heap before BLE: %lu", (unsigned long)esp_get_free_heap_size());
+    ble_init();
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    ESP_LOGI(TAG, "Free heap after BLE: %lu", (unsigned long)esp_get_free_heap_size());
+
+    xTaskCreate(can_sniffer_task, "can_sniffer", 4096, NULL, 5, NULL);
+}
+
+// ── Main ──
+
+void app_main(void)
+{
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    ota_rollback_check();
+
+    current_mode = load_mode();
+    ESP_LOGI(TAG, "Boot mode: %s (hold IO0 5s to switch)",
+             current_mode == MODE_DEV ? "DEV" : "PROD");
+
+    xTaskCreate(mode_switch_task, "mode_sw", 2048, NULL, 10, NULL);
+
+    if (current_mode == MODE_DEV) {
+        start_dev_mode();
+    } else {
+        start_prod_mode();
+    }
 }

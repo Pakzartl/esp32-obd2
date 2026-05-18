@@ -8,4 +8,16 @@ menu "ADV350 Configuration"
         string "WiFi Password"
         default "mypassword"
 
+    choice DEFAULT_MODE
+        prompt "Default boot mode"
+        default DEFAULT_MODE_DEV
+
+        config DEFAULT_MODE_DEV
+            bool "DEV (WiFi + OTA)"
+
+        config DEFAULT_MODE_PROD
+            bool "PRODUCTION (BLE + CAN)"
+
+    endchoice
+
 endmenu
