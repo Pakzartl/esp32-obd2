@@ -391,6 +391,19 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_MTU:
         ESP_LOGI(TAG, "BLE: MTU=%d", event->mtu.value);
         break;
+    case BLE_GAP_EVENT_ENC_CHANGE:
+        ESP_LOGI(TAG, "BLE: encryption change, status=%d", event->enc_change.status);
+        break;
+    case BLE_GAP_EVENT_PASSKEY_ACTION: {
+        struct ble_sm_io pkey = {0};
+        pkey.action = event->passkey.params.action;
+        if (pkey.action == BLE_SM_IOACT_DISP) {
+            pkey.passkey = 1593107;
+            ESP_LOGI(TAG, "BLE: displaying passkey: %lu", (unsigned long)pkey.passkey);
+            ble_sm_inject_io(event->passkey.conn_handle, &pkey);
+        }
+        break;
+    }
     }
     return 0;
 }
@@ -444,6 +457,13 @@ static void ble_init(void)
 
     ble_hs_cfg.sync_cb = ble_on_sync;
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
+
+    ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO;
+    ble_hs_cfg.sm_bonding = 1;
+    ble_hs_cfg.sm_mitm = 0;
+    ble_hs_cfg.sm_sc = 1;
+    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC;
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC;
 
     ESP_LOGI(TAG, "BLE: starting host task...");
     nimble_port_freertos_init(ble_host_task);
