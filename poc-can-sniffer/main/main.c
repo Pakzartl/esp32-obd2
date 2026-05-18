@@ -21,6 +21,7 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 #include "host/ble_store.h"
+#include "host/ble_gatt.h"
 
 static const char *TAG = "ADV350";
 
@@ -90,9 +91,9 @@ static void mode_switch_task(void *arg)
                 }
 
                 for (int i = 0; i < 2; i++) {
-                    gpio_set_level(LED_GPIO, 1);
-                    vTaskDelay(pdMS_TO_TICKS(30));
                     gpio_set_level(LED_GPIO, 0);
+                    vTaskDelay(pdMS_TO_TICKS(30));
+                    gpio_set_level(LED_GPIO, 1);
                     vTaskDelay(pdMS_TO_TICKS(200));
                 }
                 vTaskDelay(pdMS_TO_TICKS(200));
@@ -364,7 +365,7 @@ static void start_dev_mode(void)
         ESP_LOGW(TAG, "WiFi not connected - OTA unavailable");
     }
 
-    xTaskCreate(can_sniffer_task, "can_sniffer", 4096, NULL, 5, NULL);
+    xTaskCreatePinnedToCore(can_sniffer_task, "can_sniffer", 4096, NULL, 5, NULL, 1);
 }
 
 // ── BLE (PROD mode only — no WiFi) ──
@@ -389,6 +390,7 @@ static const ble_uuid128_t can_ctrl_chr_uuid =
 
 static uint16_t can_frame_chr_handle;
 static volatile bool ble_live_notify = false;
+static volatile uint8_t pending_led_blink = 0;
 
 static int can_frame_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                 struct ble_gatt_access_ctxt *ctxt, void *arg)
@@ -411,13 +413,8 @@ static int can_ctrl_chr_access(uint16_t conn_handle, uint16_t attr_handle,
         if (OS_MBUF_PKTLEN(ctxt->om) == 1) {
             os_mbuf_copydata(ctxt->om, 0, 1, &val);
             if (val == 0x02) {
-                ESP_LOGI(TAG, "BLE: ping — blink LED");
-                for (int i = 0; i < 3; i++) {
-                    gpio_set_level(LED_GPIO, 1);
-                    vTaskDelay(pdMS_TO_TICKS(30));
-                    gpio_set_level(LED_GPIO, 0);
-                    vTaskDelay(pdMS_TO_TICKS(200));
-                }
+                pending_led_blink = 3;
+                ESP_LOGI(TAG, "BLE: ping requested");
             } else {
                 ble_live_notify = (val != 0);
                 ESP_LOGI(TAG, "BLE: CAN live notify %s", ble_live_notify ? "ON" : "OFF");
@@ -466,6 +463,7 @@ static void ble_notify_can_frame(const twai_message_t *msg)
 }
 
 static void ble_advertise(void);
+static void ble_reboot_task(void *arg);
 
 static int ble_gap_event(struct ble_gap_event *event, void *arg)
 {
@@ -481,8 +479,8 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
         ble_live_notify = false;
-        ESP_LOGI(TAG, "BLE: disconnected");
-        ble_advertise();
+        ESP_LOGI(TAG, "BLE: disconnected, reason=%d", event->disconnect.reason);
+        xTaskCreate(ble_reboot_task, "ble_reboot", 2048, NULL, 1, NULL);
         break;
     case BLE_GAP_EVENT_SUBSCRIBE:
         if (event->subscribe.attr_handle == can_frame_chr_handle) {
@@ -538,6 +536,11 @@ static void ble_advertise(void)
     ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER, &adv_params, ble_gap_event, NULL);
 }
 
+static void ble_on_reset(int reason)
+{
+    ESP_LOGE(TAG, "BLE: host reset, reason=%d", reason);
+}
+
 static void ble_on_sync(void)
 {
     ESP_LOGI(TAG, "BLE: on_sync called, starting advertise...");
@@ -570,6 +573,7 @@ static void ble_init(void)
     ESP_LOGI(TAG, "BLE: GAP+GATT+CAN service init OK");
 
     ble_hs_cfg.sync_cb = ble_on_sync;
+    ble_hs_cfg.reset_cb = ble_on_reset;
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
 
     ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO;
@@ -580,6 +584,30 @@ static void ble_init(void)
     ESP_LOGI(TAG, "BLE: starting host task...");
     nimble_port_freertos_init(ble_host_task);
     ESP_LOGI(TAG, "BLE: host task started");
+}
+
+static void led_task(void *arg)
+{
+    while (1) {
+        if (pending_led_blink > 0) {
+            uint8_t count = pending_led_blink;
+            pending_led_blink = 0;
+            for (int i = 0; i < count; i++) {
+                gpio_set_level(LED_GPIO, 0);
+                vTaskDelay(pdMS_TO_TICKS(30));
+                gpio_set_level(LED_GPIO, 1);
+                vTaskDelay(pdMS_TO_TICKS(200));
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
+static void ble_reboot_task(void *arg)
+{
+    vTaskDelay(pdMS_TO_TICKS(300));
+    ESP_LOGI(TAG, "BLE: rebooting after disconnect...");
+    esp_restart();
 }
 
 // ── PROD Mode (BLE + CAN) ──
@@ -593,7 +621,8 @@ static void start_prod_mode(void)
     vTaskDelay(pdMS_TO_TICKS(1000));
     ESP_LOGI(TAG, "Free heap after BLE: %lu", (unsigned long)esp_get_free_heap_size());
 
-    xTaskCreate(can_sniffer_task, "can_sniffer", 4096, NULL, 5, NULL);
+    xTaskCreatePinnedToCore(can_sniffer_task, "can_sniffer", 4096, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(led_task, "led_task", 2048, NULL, 3, NULL, 1);
 
     gpio_set_level(LED_GPIO, 1);
     ESP_LOGI(TAG, "LED off (GPIO%d)", LED_GPIO);

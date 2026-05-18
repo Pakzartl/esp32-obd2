@@ -6,6 +6,7 @@ import '../services/database_service.dart';
 import '../widgets/gauge_card.dart';
 import 'scan_screen.dart';
 import 'history_screen.dart';
+import 'raw_log_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final BleService bleService;
@@ -22,6 +23,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _connected = true;
   bool _recording = false;
   int _recordCount = 0;
+  int _tabIndex = 0;
   StreamSubscription? _telemetrySub;
   StreamSubscription? _connectionSub;
 
@@ -60,11 +62,73 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
+  Widget _buildGauges() {
+    return Column(
+      children: [
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: GridView.count(
+              crossAxisCount: 2,
+              mainAxisSpacing: 12,
+              crossAxisSpacing: 12,
+              childAspectRatio: 1.2,
+              children: [
+                GaugeCard(
+                  label: 'CAN ID',
+                  value: '0x${_current.rpm.toRadixString(16).toUpperCase()}',
+                  unit: '',
+                  icon: Icons.memory,
+                  color: Colors.orange,
+                ),
+                GaugeCard(
+                  label: 'DLC',
+                  value: '${_current.speed}',
+                  unit: 'bytes',
+                  icon: Icons.data_usage,
+                  color: Colors.blue,
+                ),
+                GaugeCard(
+                  label: 'Byte 0',
+                  value: '0x${_current.throttle.toRadixString(16).toUpperCase().padLeft(2, '0')}',
+                  unit: '',
+                  icon: Icons.grid_view,
+                  color: Colors.green,
+                ),
+                GaugeCard(
+                  label: 'Byte 1',
+                  value: '0x${_current.coolantTemp.toRadixString(16).toUpperCase().padLeft(2, '0')}',
+                  unit: '',
+                  icon: Icons.grid_view,
+                  color: Colors.cyan,
+                ),
+                GaugeCard(
+                  label: 'Byte 2',
+                  value: '0x${_current.gear.toRadixString(16).toUpperCase().padLeft(2, '0')}',
+                  unit: '',
+                  icon: Icons.grid_view,
+                  color: Colors.purple,
+                ),
+                GaugeCard(
+                  label: 'Byte 3',
+                  value: '0x${_current.fuelLevel.toRadixString(16).toUpperCase().padLeft(2, '0')}',
+                  unit: '',
+                  icon: Icons.grid_view,
+                  color: Colors.amber,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('ADV350 Dashboard'),
+        title: Text(_tabIndex == 0 ? 'ADV350 Dashboard' : 'Raw CAN Log'),
         backgroundColor: Colors.black87,
         foregroundColor: Colors.white,
         actions: [
@@ -93,6 +157,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           IconButton(
             icon: const Icon(Icons.bluetooth_disabled),
             onPressed: () async {
+              await widget.bleService.clearLastDevice();
               await widget.bleService.disconnect();
               if (mounted) {
                 Navigator.pushReplacement(
@@ -138,67 +203,36 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
           Expanded(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: GridView.count(
-                crossAxisCount: 2,
-                mainAxisSpacing: 12,
-                crossAxisSpacing: 12,
-                childAspectRatio: 1.2,
-                children: [
-                  GaugeCard(
-                    label: 'CAN ID',
-                    value: '0x${_current.rpm.toRadixString(16).toUpperCase()}',
-                    unit: '',
-                    icon: Icons.memory,
-                    color: Colors.orange,
-                  ),
-                  GaugeCard(
-                    label: 'DLC',
-                    value: '${_current.speed}',
-                    unit: 'bytes',
-                    icon: Icons.data_usage,
-                    color: Colors.blue,
-                  ),
-                  GaugeCard(
-                    label: 'Byte 0',
-                    value: '0x${_current.throttle.toRadixString(16).toUpperCase().padLeft(2, '0')}',
-                    unit: '',
-                    icon: Icons.grid_view,
-                    color: Colors.green,
-                  ),
-                  GaugeCard(
-                    label: 'Byte 1',
-                    value: '0x${_current.coolantTemp.toRadixString(16).toUpperCase().padLeft(2, '0')}',
-                    unit: '',
-                    icon: Icons.grid_view,
-                    color: Colors.cyan,
-                  ),
-                  GaugeCard(
-                    label: 'Byte 2',
-                    value: '0x${_current.gear.toRadixString(16).toUpperCase().padLeft(2, '0')}',
-                    unit: '',
-                    icon: Icons.grid_view,
-                    color: Colors.purple,
-                  ),
-                  GaugeCard(
-                    label: 'Byte 3',
-                    value: '0x${_current.fuelLevel.toRadixString(16).toUpperCase().padLeft(2, '0')}',
-                    unit: '',
-                    icon: Icons.grid_view,
-                    color: Colors.amber,
-                  ),
-                ],
-              ),
-            ),
+            child: _tabIndex == 0
+                ? _buildGauges()
+                : RawLogScreen(bleService: widget.bleService),
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _toggleRecording,
-        backgroundColor: _recording ? Colors.red : Colors.green,
-        icon: Icon(_recording ? Icons.stop : Icons.fiber_manual_record),
-        label: Text(_recording ? 'Stop' : 'Record'),
+      floatingActionButton: _tabIndex == 0
+          ? FloatingActionButton.extended(
+              onPressed: _toggleRecording,
+              backgroundColor: _recording ? Colors.red : Colors.green,
+              icon: Icon(_recording ? Icons.stop : Icons.fiber_manual_record),
+              label: Text(_recording ? 'Stop' : 'Record'),
+            )
+          : null,
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _tabIndex,
+        onTap: (i) => setState(() => _tabIndex = i),
+        backgroundColor: Colors.black87,
+        selectedItemColor: Colors.blue,
+        unselectedItemColor: Colors.white38,
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.dashboard),
+            label: 'Dashboard',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.terminal),
+            label: 'Raw Log',
+          ),
+        ],
       ),
     );
   }

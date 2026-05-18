@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/telemetry.dart';
 
 class BleService {
@@ -19,9 +20,26 @@ class BleService {
   final _telemetryController = StreamController<Telemetry>.broadcast();
   final _connectionController = StreamController<bool>.broadcast();
 
+  static const String _lastDeviceKey = 'last_ble_device_id';
+
   Stream<Telemetry> get telemetryStream => _telemetryController.stream;
   Stream<bool> get connectionStream => _connectionController.stream;
   bool get isConnected => _device != null;
+
+  Future<String?> get lastDeviceId async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_lastDeviceKey);
+  }
+
+  Future<void> _saveDevice(String remoteId) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_lastDeviceKey, remoteId);
+  }
+
+  Future<void> clearLastDevice() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_lastDeviceKey);
+  }
 
   Future<List<ScanResult>> scan(
       {Duration timeout = const Duration(seconds: 5)}) async {
@@ -47,11 +65,13 @@ class BleService {
     await device.connect(
       license: License.free,
       autoConnect: false,
+      mtu: 23,
       timeout: const Duration(seconds: 10),
     );
     _device = device;
     _autoReconnect = true;
     _connectionController.add(true);
+    _saveDevice(device.remoteId.str);
 
     _connStateSub?.cancel();
     _connStateSub = device.connectionState.listen((state) {
@@ -66,10 +86,6 @@ class BleService {
         }
       }
     });
-
-    try {
-      await device.requestMtu(256);
-    } catch (_) {}
 
     final services = await device.discoverServices();
     for (final service in services) {
@@ -111,11 +127,13 @@ class BleService {
   }
 
   Future<void> _tryReconnect(BluetoothDevice device) async {
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 3; i++) {
       if (!_autoReconnect || _device != null) return;
-      await Future.delayed(Duration(seconds: 2 + i));
+      await Future.delayed(Duration(seconds: 3 + i * 2));
       try {
-        await connect(device);
+        final results = await scan(timeout: const Duration(seconds: 3));
+        if (results.isEmpty || !_autoReconnect) continue;
+        await connect(results.first.device);
         return;
       } catch (_) {}
     }
