@@ -296,11 +296,262 @@ static void ota_rollback_check(void)
 
 static void ble_notify_can_frame(const twai_message_t *msg);
 
+// ── CAN Diagnostic: Self-test + Bitrate Scan + Honda Wake-up ──
+
+static volatile bool diag_done = false;
+static char diag_result[512] = "Not run yet";
+
+static void can_diag_task(void *arg)
+{
+    int pos = 0;
+    pos += snprintf(diag_result + pos, sizeof(diag_result) - pos, "=== CAN DIAG ===\n");
+
+    // Step 1: Self-test (loopback, no external bus needed)
+    {
+        twai_general_config_t g = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO, CAN_RX_GPIO, TWAI_MODE_NO_ACK);
+        twai_timing_config_t t = TWAI_TIMING_CONFIG_500KBITS();
+        twai_filter_config_t f = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+        esp_err_t err = twai_driver_install(&g, &t, &f);
+        if (err == ESP_OK) {
+            twai_start();
+            twai_message_t tx = {.identifier = 0x123, .data_length_code = 4,
+                                 .data = {0xDE, 0xAD, 0xBE, 0xEF}};
+            err = twai_transmit(&tx, pdMS_TO_TICKS(100));
+            twai_message_t rx;
+            esp_err_t rx_err = twai_receive(&rx, pdMS_TO_TICKS(200));
+            if (err == ESP_OK && rx_err == ESP_OK && rx.identifier == 0x123) {
+                pos += snprintf(diag_result + pos, sizeof(diag_result) - pos,
+                    "SELF-TEST: PASS (TX+RX loopback OK)\n");
+            } else {
+                pos += snprintf(diag_result + pos, sizeof(diag_result) - pos,
+                    "SELF-TEST: FAIL (tx=%s rx=%s)\n", esp_err_to_name(err), esp_err_to_name(rx_err));
+            }
+            twai_stop();
+            twai_driver_uninstall();
+        } else {
+            pos += snprintf(diag_result + pos, sizeof(diag_result) - pos,
+                "SELF-TEST: INSTALL FAIL %s\n", esp_err_to_name(err));
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    // Step 2: Bitrate scan (listen-only, count bus errors per speed)
+    uint32_t bitrates[] = {125, 250, 500, 1000};
+    twai_timing_config_t timings[] = {
+        TWAI_TIMING_CONFIG_125KBITS(),
+        TWAI_TIMING_CONFIG_250KBITS(),
+        TWAI_TIMING_CONFIG_500KBITS(),
+        TWAI_TIMING_CONFIG_1MBITS(),
+    };
+
+    for (int i = 0; i < 4; i++) {
+        twai_general_config_t g = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO, CAN_RX_GPIO, TWAI_MODE_LISTEN_ONLY);
+        twai_filter_config_t f = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+        if (twai_driver_install(&g, &timings[i], &f) != ESP_OK) continue;
+        twai_start();
+        vTaskDelay(pdMS_TO_TICKS(3000)); // listen 3 seconds
+
+        twai_status_info_t st;
+        twai_get_status_info(&st);
+
+        twai_message_t rx;
+        int rx_count = 0;
+        while (twai_receive(&rx, pdMS_TO_TICKS(10)) == ESP_OK) rx_count++;
+
+        pos += snprintf(diag_result + pos, sizeof(diag_result) - pos,
+            "%lukbps: frames=%d buserr=%lu rxerr=%lu\n",
+            (unsigned long)bitrates[i], rx_count,
+            (unsigned long)st.bus_error_count, (unsigned long)st.rx_error_counter);
+
+        twai_stop();
+        twai_driver_uninstall();
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    // Step 3: Honda wake-up attempts at 500kbps NORMAL mode
+    {
+        twai_general_config_t g = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO, CAN_RX_GPIO, TWAI_MODE_NORMAL);
+        twai_timing_config_t t = TWAI_TIMING_CONFIG_500KBITS();
+        twai_filter_config_t f = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+        if (twai_driver_install(&g, &t, &f) == ESP_OK) {
+            twai_start();
+
+            struct { uint32_t id; bool extd; uint8_t data[8]; uint8_t len; const char *name; } probes[] = {
+                {0x7DF, false, {0x02, 0x01, 0x00, 0, 0, 0, 0, 0}, 8, "OBD2-7DF"},
+                {0x7E0, false, {0x02, 0x01, 0x00, 0, 0, 0, 0, 0}, 8, "OBD2-7E0"},
+                {0x7E0, false, {0x02, 0x10, 0x01, 0, 0, 0, 0, 0}, 8, "UDS-DiagSess"},
+                {0x18DB33F1, true, {0x02, 0x01, 0x00, 0, 0, 0, 0, 0}, 8, "HDS-29bit"},
+                {0x18DA10F1, true, {0x02, 0x10, 0x01, 0, 0, 0, 0, 0}, 8, "UDS-29bit"},
+            };
+
+            for (int i = 0; i < 5; i++) {
+                twai_message_t tx = {
+                    .identifier = probes[i].id,
+                    .extd = probes[i].extd,
+                    .data_length_code = probes[i].len,
+                };
+                memcpy(tx.data, probes[i].data, probes[i].len);
+
+                esp_err_t tx_err = twai_transmit(&tx, pdMS_TO_TICKS(200));
+                twai_message_t rx;
+                esp_err_t rx_err = twai_receive(&rx, pdMS_TO_TICKS(500));
+
+                pos += snprintf(diag_result + pos, sizeof(diag_result) - pos,
+                    "%s: tx=%s rx=%s", probes[i].name,
+                    tx_err == ESP_OK ? "OK" : "FAIL",
+                    rx_err == ESP_OK ? "OK" : "TIMEOUT");
+                if (rx_err == ESP_OK) {
+                    pos += snprintf(diag_result + pos, sizeof(diag_result) - pos,
+                        " ID:0x%lX [%d]", (unsigned long)rx.identifier, rx.data_length_code);
+                }
+                pos += snprintf(diag_result + pos, sizeof(diag_result) - pos, "\n");
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+
+            twai_stop();
+            twai_driver_uninstall();
+        }
+    }
+
+    pos += snprintf(diag_result + pos, sizeof(diag_result) - pos, "=== DONE ===\n");
+    ESP_LOGI(TAG, "%s", diag_result);
+    diag_done = true;
+    vTaskDelete(NULL);
+}
+
+// HTTP handler for /api/diag
+static esp_err_t api_diag_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, diag_result, strlen(diag_result));
+}
+
+// ── DID Brute-force Scanner ──
+
+#define SCAN_RESULT_SIZE 4096
+static char scan_result[SCAN_RESULT_SIZE] = "Not scanned yet. GET /api/scan?range=f4 to start.";
+static volatile bool scan_running = false;
+volatile bool scan_pause_others = false;  // pause sniffer + poll during scan
+
+static void did_scan_task(void *arg)
+{
+    uint16_t range_start = (uint16_t)(uintptr_t)arg;
+    uint16_t range_end = range_start + 0xFF;
+
+    scan_running = true;
+    scan_pause_others = true;
+    vTaskDelay(pdMS_TO_TICKS(500)); // let other tasks drain
+
+    // Drain any pending RX frames
+    twai_message_t drain;
+    while (twai_receive(&drain, pdMS_TO_TICKS(50)) == ESP_OK) {}
+
+    // Try extended session first (needed for proprietary DIDs)
+    {
+        uint8_t ext_sess[] = {0x02, UDS_DIAG_SESSION, 0x03, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA};
+        twai_message_t tx = {.identifier = HONDA_UDS_REQUEST_ID, .extd = 1, .data_length_code = 8};
+        memcpy(tx.data, ext_sess, 8);
+        twai_transmit(&tx, pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(200));
+        while (twai_receive(&drain, pdMS_TO_TICKS(50)) == ESP_OK) {}
+    }
+
+    int pos = 0;
+    int found = 0;
+    pos += snprintf(scan_result + pos, SCAN_RESULT_SIZE - pos,
+        "=== DID SCAN 0x%04X-0x%04X ===\n", range_start, range_end);
+
+    for (uint16_t did = range_start; did <= range_end && pos < SCAN_RESULT_SIZE - 120; did++) {
+        // Send ReadDataByIdentifier
+        uint8_t req[] = {0x03, UDS_READ_DATA_BY_ID, (uint8_t)(did >> 8), (uint8_t)(did & 0xFF),
+                         0xAA, 0xAA, 0xAA, 0xAA};
+        twai_message_t tx = {.identifier = HONDA_UDS_REQUEST_ID, .extd = 1, .data_length_code = 8};
+        memcpy(tx.data, req, 8);
+        twai_transmit(&tx, pdMS_TO_TICKS(100));
+
+        twai_message_t rx;
+        if (twai_receive(&rx, pdMS_TO_TICKS(150)) == ESP_OK) {
+            if (rx.extd && rx.identifier == HONDA_UDS_RESPONSE_ID) {
+                uint8_t pci_len = rx.data[0] & 0x0F;
+                uint8_t sid = rx.data[1];
+                if (sid == 0x62 && pci_len >= 3) {
+                    uint16_t resp_did = ((uint16_t)rx.data[2] << 8) | rx.data[3];
+                    pos += snprintf(scan_result + pos, SCAN_RESULT_SIZE - pos,
+                        "0x%04X: ", resp_did);
+                    for (int b = 4; b < 1 + pci_len && b < 8; b++) {
+                        pos += snprintf(scan_result + pos, SCAN_RESULT_SIZE - pos,
+                            "%02X ", rx.data[b]);
+                    }
+                    pos += snprintf(scan_result + pos, SCAN_RESULT_SIZE - pos, "\n");
+                    found++;
+                } else if (sid == 0x7F && pci_len >= 3 && rx.data[3] == 0x22) {
+                    // NRC conditionsNotCorrect — DID exists but needs different session
+                    pos += snprintf(scan_result + pos, SCAN_RESULT_SIZE - pos,
+                        "0x%04X: LOCKED (needs auth)\n", did);
+                    found++;
+                }
+            }
+        }
+    }
+    pos += snprintf(scan_result + pos, SCAN_RESULT_SIZE - pos,
+        "=== DONE: %d DIDs found ===\n", found);
+    ESP_LOGI(TAG, "DID scan complete: %d found in 0x%04X-0x%04X", found, range_start, range_end);
+
+    scan_pause_others = false;
+    scan_running = false;
+    vTaskDelete(NULL);
+}
+
+// /api/scan?range=xx       → view result (or "not scanned yet")
+// /api/scan?range=xx&go=1  → start new scan
+static esp_err_t api_scan_handler(httpd_req_t *req)
+{
+    char query[48] = {0};
+    uint16_t range = 0xF400;
+    bool start_new = false;
+
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char val[8];
+        if (httpd_query_key_value(query, "range", val, sizeof(val)) == ESP_OK) {
+            unsigned int r = 0;
+            if (sscanf(val, "%x", &r) == 1) range = (uint16_t)(r << 8);
+        }
+        if (httpd_query_key_value(query, "go", val, sizeof(val)) == ESP_OK) {
+            start_new = true;
+        }
+    }
+
+    if (start_new && !scan_running) {
+        xTaskCreatePinnedToCore(did_scan_task, "did_scan", 4096,
+            (void *)(uintptr_t)range, 4, NULL, 1);
+    }
+
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+    if (scan_running) {
+        httpd_resp_sendstr_chunk(req, "[SCANNING...]\n");
+        httpd_resp_sendstr_chunk(req, scan_result);
+        httpd_resp_send_chunk(req, NULL, 0);
+        return ESP_OK;
+    }
+    return httpd_resp_send(req, scan_result, strlen(scan_result));
+}
+
 // ── CAN Sniffer ──
 
 static void can_sniffer_task(void *arg)
 {
-    twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO, CAN_RX_GPIO, TWAI_MODE_LISTEN_ONLY);
+    // Run diagnostics first
+    ESP_LOGI(TAG, "Running CAN diagnostics...");
+    diag_done = false;
+    xTaskCreatePinnedToCore(can_diag_task, "can_diag", 4096, NULL, 5, NULL, 1);
+    while (!diag_done) vTaskDelay(pdMS_TO_TICKS(100));
+    ESP_LOGI(TAG, "CAN diagnostics complete, starting sniffer...");
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO, CAN_RX_GPIO, TWAI_MODE_NORMAL);
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
     twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
@@ -319,6 +570,8 @@ static void can_sniffer_task(void *arg)
     int64_t last_stats_us = start_us;
 
     while (1) {
+        if (scan_pause_others) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }
+
         twai_message_t msg;
         err = twai_receive(&msg, pdMS_TO_TICKS(100));
 
@@ -401,8 +654,10 @@ static const char log_html[] =
     "while(t.rows.length>300)t.deleteRow(0);"
     "window.scrollTo(0,document.body.scrollHeight);"
     "}"
+    "var t=j.twai||{};"
     "document.getElementById('st').textContent="
-    "'Frames: '+j.n+' | FPS: '+j.p+' | Heap: '+j.h+' | Ring: '+j.f.length;"
+    "'Frames: '+j.n+' | FPS: '+j.p+' | Heap: '+j.h+' | Ring: '+j.f.length"
+    "+(t.state!=undefined?' | TWAI:'+['STOPPED','RUNNING','BUS_OFF','RECOVERING'][t.state]+' TXerr:'+t.tx_err+' RXerr:'+t.rx_err+' TXfail:'+t.tx_fail+' BUSerr:'+t.bus_err:'');"
     "}catch(e){document.getElementById('st').textContent='Error: '+e;}"
     "}"
     "setInterval(p,200);"
@@ -428,10 +683,23 @@ static esp_err_t api_frames_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
-    char buf[64];
+    // TWAI bus status for remote debug
+    twai_status_info_t twai_status;
+    twai_get_status_info(&twai_status);
+
+    char buf[256];
     int len = snprintf(buf, sizeof(buf),
-        "{\"n\":%llu,\"p\":%llu,\"h\":%lu,\"f\":[",
-        s_total_frames, s_total_fps, (unsigned long)esp_get_free_heap_size());
+        "{\"n\":%llu,\"p\":%llu,\"h\":%lu,"
+        "\"twai\":{\"state\":%d,\"tx_err\":%lu,\"rx_err\":%lu,\"tx_fail\":%lu,\"rx_miss\":%lu,\"arb_lost\":%lu,\"bus_err\":%lu},"
+        "\"f\":[",
+        s_total_frames, s_total_fps, (unsigned long)esp_get_free_heap_size(),
+        (int)twai_status.state,
+        (unsigned long)twai_status.tx_error_counter,
+        (unsigned long)twai_status.rx_error_counter,
+        (unsigned long)twai_status.tx_failed_count,
+        (unsigned long)twai_status.rx_missed_count,
+        (unsigned long)twai_status.arb_lost_count,
+        (unsigned long)twai_status.bus_error_count);
     httpd_resp_send_chunk(req, buf, len);
 
     int start = (s_log_count < LOG_RING_SIZE) ? 0 : s_log_head;
@@ -492,16 +760,23 @@ static void start_dev_mode(void)
             httpd_uri_t apiframes = { .uri = "/api/frames", .method = HTTP_GET, .handler = api_frames_handler };
             httpd_register_uri_handler(server, &page);
             httpd_register_uri_handler(server, &update);
+            httpd_uri_t apidiag = { .uri = "/api/diag", .method = HTTP_GET, .handler = api_diag_handler };
             httpd_register_uri_handler(server, &logpage);
             httpd_register_uri_handler(server, &apiframes);
+            httpd_uri_t apiscan = { .uri = "/api/scan", .method = HTTP_GET, .handler = api_scan_handler };
+            httpd_register_uri_handler(server, &apidiag);
+            httpd_register_uri_handler(server, &apiscan);
             ESP_LOGI(TAG, "OTA: http://" IPSTR, IP2STR(&wifi_ip));
             ESP_LOGI(TAG, "CAN Log: http://" IPSTR "/log", IP2STR(&wifi_ip));
+            ESP_LOGI(TAG, "DID Scan: http://" IPSTR "/api/scan?range=f4", IP2STR(&wifi_ip));
         }
     } else {
         ESP_LOGW(TAG, "WiFi not connected - OTA unavailable");
     }
 
     xTaskCreatePinnedToCore(can_sniffer_task, "can_sniffer", 4096, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(obd2_poll_task, "obd2_poll", 4096, NULL, 4, NULL, 1);
+    ESP_LOGI(TAG, "UDS polling auto-started (DEV mode, 29-bit extended)");
 }
 
 // ── BLE (PROD mode only — no WiFi) ──
@@ -640,7 +915,7 @@ static int can_ctrl_chr_access(uint16_t conn_handle, uint16_t attr_handle,
         uint8_t status[3] = {
             ble_live_notify ? 1 : 0,
             obd2_polling_active ? 1 : 0,
-            g_vehicle.pids_probed ? 1 : 0,
+            g_vehicle.dids_probed ? 1 : 0,
         };
         os_mbuf_append(ctxt->om, status, sizeof(status));
     } else if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {

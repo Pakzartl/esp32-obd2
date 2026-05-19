@@ -5,165 +5,59 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-static const char *TAG = "OBD2";
+static const char *TAG = "UDS";
 
 vehicle_data_t g_vehicle = {0};
 
-// ── OBD2 Request/Response ──
+// ── UDS Request (29-bit extended CAN) ──
 
-static esp_err_t obd2_send_request(uint8_t mode, uint8_t pid)
+static esp_err_t uds_send(uint32_t can_id, const uint8_t *data, uint8_t len)
 {
     twai_message_t msg = {
-        .identifier = OBD2_REQUEST_ID,
+        .identifier = can_id,
+        .extd = 1,
         .data_length_code = 8,
-        .data = {0x02, mode, pid, 0x00, 0x00, 0x00, 0x00, 0x00},
     };
-    esp_err_t err = twai_transmit(&msg, pdMS_TO_TICKS(50));
+    memset(msg.data, 0xCC, 8); // padding per ISO-TP
+    msg.data[0] = len; // PCI single frame
+    memcpy(&msg.data[1], data, len);
+
+    esp_err_t err = twai_transmit(&msg, pdMS_TO_TICKS(100));
     if (err != ESP_OK) {
-        ESP_LOGD(TAG, "TX fail PID 0x%02X: %s", pid, esp_err_to_name(err));
+        ESP_LOGD(TAG, "TX fail 0x%08lX: %s", (unsigned long)can_id, esp_err_to_name(err));
     }
     return err;
 }
 
-void obd2_request_pid(uint8_t pid)
+static esp_err_t uds_request(uint8_t service, const uint8_t *sub, uint8_t sub_len)
 {
-    obd2_send_request(0x01, pid);
-}
-
-bool obd2_is_pid_supported(uint8_t pid)
-{
-    if (!g_vehicle.pids_probed) return false;
-    uint8_t group = pid / 32;
-    uint8_t bit = 31 - (pid % 32);
-    if (group >= 4) return false;
-    return (g_vehicle.supported_pids[group] >> bit) & 1;
-}
-
-void obd2_probe_supported_pids(void)
-{
-    ESP_LOGI(TAG, "Probing supported PIDs...");
-    obd2_send_request(0x01, PID_SUPPORTED_01_20);
-    vTaskDelay(pdMS_TO_TICKS(200));
-    obd2_send_request(0x01, PID_SUPPORTED_21_40);
-    vTaskDelay(pdMS_TO_TICKS(200));
-    obd2_send_request(0x01, PID_SUPPORTED_41_60);
-    vTaskDelay(pdMS_TO_TICKS(200));
-    obd2_send_request(0x01, PID_SUPPORTED_61_80);
-}
-
-// ── OBD2 Response Parser ──
-
-static void parse_obd2_response(const uint8_t *data, uint8_t dlc)
-{
-    if (dlc < 3 || data[0] < 3) return;
-    uint8_t mode = data[1];
-    uint8_t pid = data[2];
-
-    if (mode != 0x41) return; // Mode 01 response
-
-    switch (pid) {
-    case PID_SUPPORTED_01_20:
-        if (data[0] >= 6) {
-            g_vehicle.supported_pids[0] = ((uint32_t)data[3] << 24) |
-                ((uint32_t)data[4] << 16) | ((uint32_t)data[5] << 8) | data[6];
-            g_vehicle.pids_probed = true;
-            ESP_LOGI(TAG, "PIDs 01-20: 0x%08lX", (unsigned long)g_vehicle.supported_pids[0]);
-        }
-        break;
-    case PID_SUPPORTED_21_40:
-        if (data[0] >= 6) {
-            g_vehicle.supported_pids[1] = ((uint32_t)data[3] << 24) |
-                ((uint32_t)data[4] << 16) | ((uint32_t)data[5] << 8) | data[6];
-            ESP_LOGI(TAG, "PIDs 21-40: 0x%08lX", (unsigned long)g_vehicle.supported_pids[1]);
-        }
-        break;
-    case PID_SUPPORTED_41_60:
-        if (data[0] >= 6) {
-            g_vehicle.supported_pids[2] = ((uint32_t)data[3] << 24) |
-                ((uint32_t)data[4] << 16) | ((uint32_t)data[5] << 8) | data[6];
-        }
-        break;
-    case PID_SUPPORTED_61_80:
-        if (data[0] >= 6) {
-            g_vehicle.supported_pids[3] = ((uint32_t)data[3] << 24) |
-                ((uint32_t)data[4] << 16) | ((uint32_t)data[5] << 8) | data[6];
-        }
-        break;
-    case PID_RPM:
-        if (data[0] >= 4)
-            sensor_set(&g_vehicle.rpm, ((float)data[3] * 256.0f + data[4]) / 4.0f);
-        break;
-    case PID_SPEED:
-        if (data[0] >= 3)
-            sensor_set(&g_vehicle.speed_kmh, (float)data[3]);
-        break;
-    case PID_COOLANT_TEMP:
-        if (data[0] >= 3)
-            sensor_set(&g_vehicle.coolant_temp_c, (float)data[3] - 40.0f);
-        break;
-    case PID_THROTTLE:
-        if (data[0] >= 3)
-            sensor_set(&g_vehicle.throttle_pct, data[3] * 100.0f / 255.0f);
-        break;
-    case PID_ENGINE_LOAD:
-        if (data[0] >= 3)
-            sensor_set(&g_vehicle.engine_load_pct, data[3] * 100.0f / 255.0f);
-        break;
-    case PID_MAP_KPA:
-        if (data[0] >= 3)
-            sensor_set(&g_vehicle.map_kpa, (float)data[3]);
-        break;
-    case PID_INTAKE_AIR_TEMP:
-        if (data[0] >= 3)
-            sensor_set(&g_vehicle.intake_air_temp_c, (float)data[3] - 40.0f);
-        break;
-    case PID_BATTERY_VOLTAGE:
-        if (data[0] >= 4)
-            sensor_set(&g_vehicle.battery_v, ((float)data[3] * 256.0f + data[4]) / 1000.0f);
-        break;
-    case PID_FUEL_RATE:
-        if (data[0] >= 4)
-            sensor_set(&g_vehicle.fuel_rate_lph, ((float)data[3] * 256.0f + data[4]) * 0.05f);
-        break;
-    case PID_FUEL_LEVEL:
-        if (data[0] >= 3)
-            sensor_set(&g_vehicle.fuel_level_pct, data[3] * 100.0f / 255.0f);
-        break;
+    uint8_t payload[7];
+    payload[0] = service;
+    if (sub_len > 0 && sub_len <= 6) {
+        memcpy(&payload[1], sub, sub_len);
     }
+    return uds_send(HONDA_UDS_REQUEST_ID, payload, 1 + sub_len);
 }
 
-// ── DTC Reader ──
+// ── UDS Commands ──
 
-static void dtc_raw_to_text(uint16_t raw, char *out)
+void obd2_start_session(void)
 {
-    static const char prefix[] = {'P', 'C', 'B', 'U'};
-    uint8_t type = (raw >> 14) & 0x03;
-    uint8_t d2 = (raw >> 12) & 0x03;
-    uint8_t d3 = (raw >> 8) & 0x0F;
-    uint8_t d4 = (raw >> 4) & 0x0F;
-    uint8_t d5 = raw & 0x0F;
-    snprintf(out, 6, "%c%d%X%X%X", prefix[type], d2, d3, d4, d5);
+    ESP_LOGI(TAG, "Starting diagnostic session...");
+    uint8_t sub[] = {UDS_SESSION_DEFAULT};
+    uds_request(UDS_DIAG_SESSION, sub, 1);
 }
 
-static void parse_dtc_response(const uint8_t *data, uint8_t dlc)
+void obd2_tester_present(void)
 {
-    if (dlc < 2 || data[1] != 0x43) return; // Mode 03 response
-    uint8_t count = data[2];
-    if (count > 16) count = 16;
+    uint8_t sub[] = {0x00}; // sub-function: no response
+    uds_request(UDS_TESTER_PRESENT, sub, 1);
+}
 
-    g_vehicle.dtc_count = 0;
-    for (int i = 0; i < count && (3 + i * 2 + 1) < dlc; i++) {
-        uint16_t raw = ((uint16_t)data[3 + i * 2] << 8) | data[4 + i * 2];
-        if (raw == 0) continue;
-        g_vehicle.dtcs[g_vehicle.dtc_count].raw = raw;
-        dtc_raw_to_text(raw, g_vehicle.dtcs[g_vehicle.dtc_count].text);
-        g_vehicle.dtc_count++;
-    }
-    g_vehicle.dtcs_valid = true;
-    ESP_LOGI(TAG, "DTCs: %d codes found", g_vehicle.dtc_count);
-    for (int i = 0; i < g_vehicle.dtc_count; i++) {
-        ESP_LOGI(TAG, "  DTC[%d]: %s (0x%04X)", i, g_vehicle.dtcs[i].text, g_vehicle.dtcs[i].raw);
-    }
+void obd2_read_did(uint16_t did)
+{
+    uint8_t sub[] = {(uint8_t)(did >> 8), (uint8_t)(did & 0xFF)};
+    uds_request(UDS_READ_DATA_BY_ID, sub, 2);
 }
 
 void obd2_read_dtcs(void)
@@ -171,153 +65,260 @@ void obd2_read_dtcs(void)
     ESP_LOGI(TAG, "Reading DTCs...");
     g_vehicle.dtcs_valid = false;
     g_vehicle.dtc_count = 0;
-    twai_message_t msg = {
-        .identifier = OBD2_REQUEST_ID,
-        .data_length_code = 8,
-        .data = {0x01, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
-    };
-    twai_transmit(&msg, pdMS_TO_TICKS(50));
+    uint8_t sub[] = {0x02, 0xFF, 0xFF}; // reportDTCByStatusMask, all DTCs
+    uds_request(UDS_READ_DTC, sub, 3);
 }
 
-// ── Honda Proprietary Broadcast Decoder ──
-//
-// CAN IDs below are PREDICTIONS based on opendbc Honda car data
-// and community research. They MUST be verified with a real ADV350
-// capture. Update these IDs after first vehicle test.
-//
-// The decoder silently ignores frames it doesn't recognize,
-// so wrong IDs simply produce no data (no crash).
+// ── UDS Response Parser ──
 
-#define HONDA_ID_ENGINE_1    0x158   // predicted: RPM + speed
-#define HONDA_ID_ENGINE_2    0x17C   // predicted: RPM alt + throttle
-#define HONDA_ID_THROTTLE    0x130   // predicted: TPS raw
-#define HONDA_ID_SPEED       0x1B0   // predicted: wheel speed
-#define HONDA_ID_TEMPS       0x324   // predicted: coolant + IAT
-#define HONDA_ID_ABS         0x1D0   // predicted: ABS wheel speeds
-#define HONDA_ID_MISC        0x294   // predicted: battery + lambda
-
-void honda_decode_frame(uint32_t can_id, const uint8_t *data, uint8_t dlc)
+static void parse_read_data_response(const uint8_t *data, uint8_t len)
 {
-    switch (can_id) {
+    // data[0] = 0x62 (positive response for ReadDataByIdentifier)
+    // data[1..2] = DID
+    // data[3..] = value
+    if (len < 4) return;
 
-    case HONDA_ID_ENGINE_1:
-        if (dlc >= 4) {
-            float rpm = ((float)data[0] * 256.0f + data[1]) / 4.0f;
-            if (rpm >= 0 && rpm < 15000)
-                sensor_set(&g_vehicle.honda_rpm, rpm);
-            float speed = ((float)data[2] * 256.0f + data[3]) * 0.01f;
-            if (speed >= 0 && speed < 300)
-                sensor_set(&g_vehicle.honda_speed, speed);
+    uint16_t did = ((uint16_t)data[1] << 8) | data[2];
+    const uint8_t *val = &data[3];
+    uint8_t vlen = len - 3;
+
+    switch (did) {
+    case DID_RPM:
+        if (vlen >= 2) {
+            float rpm = ((float)val[0] * 256.0f + val[1]) / 4.0f;
+            sensor_set(&g_vehicle.rpm, rpm);
+            ESP_LOGD(TAG, "RPM: %.0f", rpm);
         }
         break;
 
-    case HONDA_ID_ENGINE_2:
-        if (dlc >= 4) {
-            float rpm = ((float)data[0] * 256.0f + data[1]) / 4.0f;
-            if (rpm >= 0 && rpm < 15000)
-                sensor_set(&g_vehicle.honda_rpm, rpm);
-            float tps = data[2] * 100.0f / 255.0f;
-            sensor_set(&g_vehicle.honda_throttle, tps);
+    case DID_SPEED:
+        if (vlen >= 1) {
+            sensor_set(&g_vehicle.speed_kmh, (float)val[0]);
+            ESP_LOGD(TAG, "Speed: %d km/h", val[0]);
         }
         break;
 
-    case HONDA_ID_THROTTLE:
-        if (dlc >= 1) {
-            float tps = data[0] * 100.0f / 255.0f;
-            sensor_set(&g_vehicle.honda_throttle, tps);
+    case DID_COOLANT_TEMP:
+        if (vlen >= 1) {
+            float temp = (float)val[0] - 40.0f;
+            sensor_set(&g_vehicle.coolant_temp_c, temp);
+            ESP_LOGD(TAG, "Coolant: %.0f C", temp);
         }
         break;
 
-    case HONDA_ID_SPEED:
-        if (dlc >= 4) {
-            float front = ((float)data[0] * 256.0f + data[1]) * 0.01f;
-            float rear  = ((float)data[2] * 256.0f + data[3]) * 0.01f;
-            if (front >= 0 && front < 300)
-                sensor_set(&g_vehicle.wheel_speed_front, front);
-            if (rear >= 0 && rear < 300)
-                sensor_set(&g_vehicle.wheel_speed_rear, rear);
-            sensor_set(&g_vehicle.honda_speed, rear);
+    case DID_THROTTLE:
+        if (vlen >= 1) {
+            float tps = val[0] * 100.0f / 255.0f;
+            sensor_set(&g_vehicle.throttle_pct, tps);
+            ESP_LOGD(TAG, "Throttle: %.1f%%", tps);
         }
         break;
 
-    case HONDA_ID_TEMPS:
-        if (dlc >= 2) {
-            float coolant = (float)data[0] - 40.0f;
-            if (coolant > -40 && coolant < 200)
-                sensor_set(&g_vehicle.honda_coolant, coolant);
-            float iat = (float)data[1] - 40.0f;
-            if (iat > -40 && iat < 100)
-                sensor_set(&g_vehicle.intake_air_temp_c, iat);
+    case DID_ENGINE_LOAD:
+        if (vlen >= 1) {
+            sensor_set(&g_vehicle.engine_load_pct, val[0] * 100.0f / 255.0f);
         }
         break;
 
-    case HONDA_ID_ABS:
-        if (dlc >= 4) {
-            float front = ((float)data[0] * 256.0f + data[1]) * 0.01f;
-            float rear  = ((float)data[2] * 256.0f + data[3]) * 0.01f;
-            if (front >= 0 && front < 300)
-                sensor_set(&g_vehicle.wheel_speed_front, front);
-            if (rear >= 0 && rear < 300)
-                sensor_set(&g_vehicle.wheel_speed_rear, rear);
+    case DID_MAP_KPA:
+        if (vlen >= 1) {
+            sensor_set(&g_vehicle.map_kpa, (float)val[0]);
         }
         break;
 
-    case HONDA_ID_MISC:
-        if (dlc >= 2) {
-            float batt = data[0] * 0.1f;
-            if (batt > 5 && batt < 20)
-                sensor_set(&g_vehicle.battery_v, batt);
-            if (dlc >= 3) {
-                float lambda = data[1] / 128.0f;
-                if (lambda > 0.5f && lambda < 2.0f)
-                    sensor_set(&g_vehicle.honda_lambda, lambda);
-            }
+    case DID_INTAKE_AIR_TEMP:
+        if (vlen >= 1) {
+            sensor_set(&g_vehicle.intake_air_temp_c, (float)val[0] - 40.0f);
+        }
+        break;
+
+    case DID_BATTERY_VOLTAGE:
+        if (vlen >= 2) {
+            sensor_set(&g_vehicle.battery_v, ((float)val[0] * 256.0f + val[1]) / 1000.0f);
+        }
+        break;
+
+    case DID_FUEL_RATE:
+        if (vlen >= 2) {
+            sensor_set(&g_vehicle.fuel_rate_lph, ((float)val[0] * 256.0f + val[1]) * 0.05f);
+        }
+        break;
+
+    case DID_INJECTOR_PW:
+        if (vlen >= 2) {
+            sensor_set(&g_vehicle.injector_pw_us, (float)val[0] * 256.0f + val[1]);
+        }
+        break;
+
+    case DID_LAMBDA:
+        if (vlen >= 2) {
+            float lambda = ((float)val[0] * 256.0f + val[1]) / 32768.0f;
+            sensor_set(&g_vehicle.lambda, lambda);
         }
         break;
 
     default:
+        ESP_LOGI(TAG, "Unknown DID 0x%04X, %d bytes:", did, vlen);
+        for (int i = 0; i < vlen && i < 8; i++) {
+            printf("%02X ", val[i]);
+        }
+        printf("\n");
         break;
     }
+}
+
+static void parse_dtc_response(const uint8_t *data, uint8_t len)
+{
+    // data[0] = 0x59 (positive response for ReadDTCInformation)
+    // data[1] = sub-function echo
+    // data[2] = statusAvailabilityMask
+    // data[3..] = DTC records: [DTC_high][DTC_mid][DTC_low][status]
+    if (len < 3) return;
+
+    g_vehicle.dtc_count = 0;
+    int pos = 3;
+    while (pos + 3 < len && g_vehicle.dtc_count < 16) {
+        uint32_t dtc_raw = ((uint32_t)data[pos] << 16) | ((uint32_t)data[pos+1] << 8) | data[pos+2];
+        uint8_t status = data[pos+3];
+        if (dtc_raw == 0) { pos += 4; continue; }
+
+        static const char prefix[] = {'P', 'C', 'B', 'U'};
+        uint8_t type = (data[pos] >> 6) & 0x03;
+        snprintf(g_vehicle.dtcs[g_vehicle.dtc_count].text, 6, "%c%02X%02X",
+                 prefix[type], data[pos] & 0x3F, data[pos+1]);
+        g_vehicle.dtcs[g_vehicle.dtc_count].raw = (uint16_t)(dtc_raw >> 8);
+        g_vehicle.dtc_count++;
+
+        ESP_LOGI(TAG, "DTC: %s (status=0x%02X)",
+                 g_vehicle.dtcs[g_vehicle.dtc_count-1].text, status);
+        pos += 4;
+    }
+    g_vehicle.dtcs_valid = true;
+    ESP_LOGI(TAG, "DTCs: %d codes found", g_vehicle.dtc_count);
+}
+
+static void parse_negative_response(const uint8_t *data, uint8_t len)
+{
+    if (len < 3) return;
+    // data[0]=0x7F, data[1]=rejected service, data[2]=NRC
+    static const char *nrc_names[] = {
+        [0x10] = "generalReject",
+        [0x11] = "serviceNotSupported",
+        [0x12] = "subFunctionNotSupported",
+        [0x13] = "incorrectMessageLength",
+        [0x14] = "responseTooLong",
+        [0x22] = "conditionsNotCorrect",
+        [0x31] = "requestOutOfRange",
+        [0x33] = "securityAccessDenied",
+        [0x72] = "generalProgrammingFailure",
+        [0x78] = "requestCorrectlyReceived_responsePending",
+    };
+    const char *name = (data[2] < 0x80 && nrc_names[data[2]]) ? nrc_names[data[2]] : "unknown";
+    ESP_LOGW(TAG, "NRC: service=0x%02X error=0x%02X (%s)", data[1], data[2], name);
 }
 
 // ── Frame Router ──
 
 void obd2_process_frame(const twai_message_t *msg)
 {
-    if (msg->identifier == OBD2_RESPONSE_ID && !msg->extd) {
-        parse_obd2_response(msg->data, msg->data_length_code);
-    } else if (msg->identifier == OBD2_RESPONSE_ID - 1 && msg->data[1] == 0x43) {
-        parse_dtc_response(msg->data, msg->data_length_code);
-    } else if (!msg->extd && msg->identifier < 0x800) {
-        honda_decode_frame(msg->identifier, msg->data, msg->data_length_code);
+    // Honda UDS response (29-bit extended)
+    if (msg->extd && msg->identifier == HONDA_UDS_RESPONSE_ID) {
+        uint8_t pci = msg->data[0];
+        uint8_t sf_len = pci & 0x0F; // single frame length
+        if ((pci & 0xF0) != 0x00) return; // only handle single frames for now
+        if (sf_len < 1 || sf_len > 7) return;
+
+        uint8_t sid = msg->data[1];
+
+        if (sid == (UDS_READ_DATA_BY_ID + UDS_POSITIVE_OFFSET)) {
+            parse_read_data_response(&msg->data[1], sf_len);
+        } else if (sid == (UDS_READ_DTC + UDS_POSITIVE_OFFSET)) {
+            parse_dtc_response(&msg->data[1], sf_len);
+        } else if (sid == (UDS_DIAG_SESSION + UDS_POSITIVE_OFFSET)) {
+            g_vehicle.session_active = true;
+            ESP_LOGI(TAG, "Diagnostic session active");
+        } else if (sid == 0x7F) {
+            parse_negative_response(&msg->data[1], sf_len);
+        } else if (sid == (UDS_TESTER_PRESENT + UDS_POSITIVE_OFFSET)) {
+            // keep-alive ACK, ignore
+        } else {
+            ESP_LOGI(TAG, "UDS response SID=0x%02X len=%d", sid, sf_len);
+        }
     }
 }
 
-// ── OBD2 Polling Task ──
+// ── DID Probe — discover which DIDs the ECU supports ──
 
-static const uint8_t poll_pids[] = {
-    PID_RPM, PID_SPEED, PID_THROTTLE, PID_COOLANT_TEMP,
-    PID_ENGINE_LOAD, PID_MAP_KPA, PID_INTAKE_AIR_TEMP,
-    PID_BATTERY_VOLTAGE, PID_FUEL_RATE, PID_FUEL_LEVEL,
+void obd2_probe_dids(void)
+{
+    ESP_LOGI(TAG, "Probing DIDs...");
+    g_vehicle.supported_did_count = 0;
+
+    static const uint16_t probe_dids[] = {
+        DID_RPM, DID_SPEED, DID_COOLANT_TEMP, DID_THROTTLE,
+        DID_ENGINE_LOAD, DID_MAP_KPA, DID_INTAKE_AIR_TEMP,
+        DID_BATTERY_VOLTAGE, DID_FUEL_RATE,
+        DID_INJECTOR_PW, DID_LAMBDA,
+        // Honda-specific DIDs to try
+        0x0001, 0x0002, 0x0003, 0x0010, 0x0011, 0x0012,
+        0x0020, 0x0021, 0x0100, 0x0101,
+        0xF190, // VIN
+        0xF194, // System supplier ECU HW number
+    };
+
+    for (int i = 0; i < sizeof(probe_dids) / sizeof(probe_dids[0]); i++) {
+        obd2_read_did(probe_dids[i]);
+        vTaskDelay(pdMS_TO_TICKS(150));
+
+        // Check if we got a response (sensor updated)
+        twai_message_t rx;
+        while (twai_receive(&rx, pdMS_TO_TICKS(50)) == ESP_OK) {
+            obd2_process_frame(&rx);
+        }
+    }
+
+    g_vehicle.dids_probed = true;
+    ESP_LOGI(TAG, "DID probe complete");
+}
+
+// ── UDS Polling Task ──
+
+static const uint16_t poll_dids[] = {
+    DID_RPM, DID_SPEED, DID_THROTTLE, DID_COOLANT_TEMP,
+    DID_ENGINE_LOAD, DID_MAP_KPA, DID_INTAKE_AIR_TEMP,
+    DID_BATTERY_VOLTAGE, DID_FUEL_RATE,
 };
-#define POLL_PID_COUNT (sizeof(poll_pids) / sizeof(poll_pids[0]))
+#define POLL_DID_COUNT (sizeof(poll_dids) / sizeof(poll_dids[0]))
 
 void obd2_poll_task(void *arg)
 {
     vTaskDelay(pdMS_TO_TICKS(2000));
 
-    obd2_probe_supported_pids();
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    // Start diagnostic session
+    obd2_start_session();
+    vTaskDelay(pdMS_TO_TICKS(500));
 
-    ESP_LOGI(TAG, "OBD2 polling started (%d PIDs in rotation)", (int)POLL_PID_COUNT);
+    // Probe DIDs
+    obd2_probe_dids();
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    ESP_LOGI(TAG, "UDS polling started (%d DIDs in rotation)", (int)POLL_DID_COUNT);
 
     uint8_t idx = 0;
+    uint32_t tester_present_counter = 0;
+
     while (1) {
-        uint8_t pid = poll_pids[idx];
-        if (!g_vehicle.pids_probed || obd2_is_pid_supported(pid)) {
-            obd2_request_pid(pid);
+        if (scan_pause_others) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }
+        obd2_read_did(poll_dids[idx]);
+        idx = (idx + 1) % POLL_DID_COUNT;
+
+        // Send tester present every ~3 seconds to keep session alive
+        tester_present_counter++;
+        if (tester_present_counter >= 30) {
+            obd2_tester_present();
+            tester_present_counter = 0;
         }
-        idx = (idx + 1) % POLL_PID_COUNT;
+
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
@@ -325,5 +326,5 @@ void obd2_poll_task(void *arg)
 void obd2_init(void)
 {
     memset(&g_vehicle, 0, sizeof(g_vehicle));
-    ESP_LOGI(TAG, "OBD2 engine initialized");
+    ESP_LOGI(TAG, "Honda UDS engine initialized (29-bit extended CAN)");
 }

@@ -116,7 +116,7 @@ void metrics_update(void)
     } else {
         float map = vd_map(&g_vehicle);
         float iat = vd_iat(&g_vehicle);
-        float lambda = sensor_fresh(&g_vehicle.honda_lambda) ? g_vehicle.honda_lambda.value : 1.0f;
+        float lambda = sensor_fresh(&g_vehicle.lambda) ? g_vehicle.lambda.value : 1.0f;
 
         if (map > 0) {
             fuel_rate = calc_fuel_rate_speed_density(map, rpm, iat, lambda);
