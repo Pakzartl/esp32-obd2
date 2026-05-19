@@ -8,6 +8,7 @@ import 'scan_screen.dart';
 import 'history_screen.dart';
 import 'raw_log_screen.dart';
 import 'metrics_screen.dart';
+import 'ota_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final BleService bleService;
@@ -171,6 +172,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 );
               }
             },
+          ),
+          IconButton(
+            icon: const Icon(Icons.system_update),
+            tooltip: 'Firmware Update',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => OtaScreen(bleService: widget.bleService),
+              ),
+            ),
           ),
           IconButton(
             icon: const Icon(Icons.history),

@@ -25,6 +25,8 @@
 #include "obd2.h"
 #include "metrics.h"
 
+#define FW_VERSION "0.3.0"
+
 static const char *TAG = "ADV350";
 
 #define WIFI_SSID      CONFIG_WIFI_SSID
@@ -813,13 +815,28 @@ static const ble_uuid128_t dtc_chr_uuid =
     BLE_UUID128_INIT(0xf5, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12,
                      0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
 
+static const ble_uuid128_t ota_data_chr_uuid =
+    BLE_UUID128_INIT(0xf6, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12,
+                     0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
+
+static const ble_uuid128_t fw_version_chr_uuid =
+    BLE_UUID128_INIT(0xf7, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12,
+                     0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
+
 static uint16_t can_frame_chr_handle;
 static uint16_t vehicle_data_chr_handle;
 static uint16_t metrics_chr_handle;
 static uint16_t dtc_chr_handle;
+static uint16_t ota_data_chr_handle;
 static volatile bool ble_live_notify = false;
 static volatile bool ble_data_notify = false;
 static volatile bool obd2_polling_active = false;
+
+static esp_ota_handle_t ble_ota_handle = 0;
+static const esp_partition_t *ble_ota_partition = NULL;
+static uint32_t ble_ota_total = 0;
+static uint32_t ble_ota_received = 0;
+static volatile bool ble_ota_active = false;
 static volatile uint8_t pending_led_blink = 0;
 static TaskHandle_t obd2_poll_task_handle = NULL;
 
@@ -908,8 +925,49 @@ static int dtc_chr_access(uint16_t conn_handle, uint16_t attr_handle,
     return 0;
 }
 
+static int fw_version_chr_access(uint16_t conn_handle, uint16_t attr_handle,
+                                 struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
+        os_mbuf_append(ctxt->om, FW_VERSION, strlen(FW_VERSION));
+    }
+    return 0;
+}
+
+static int ota_data_chr_access(uint16_t conn_handle, uint16_t attr_handle,
+                               struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
+        uint8_t buf[9];
+        buf[0] = ble_ota_active ? 1 : 0;
+        memcpy(&buf[1], &ble_ota_received, 4);
+        memcpy(&buf[5], &ble_ota_total, 4);
+        os_mbuf_append(ctxt->om, buf, sizeof(buf));
+        return 0;
+    }
+
+    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return 0;
+    if (!ble_ota_active) return BLE_ATT_ERR_INVALID_HANDLE;
+
+    uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
+    uint8_t chunk[512];
+    if (len > sizeof(chunk)) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+
+    os_mbuf_copydata(ctxt->om, 0, len, chunk);
+    esp_err_t err = esp_ota_write(ble_ota_handle, chunk, len);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "BLE OTA: write failed: %s", esp_err_to_name(err));
+        esp_ota_abort(ble_ota_handle);
+        ble_ota_active = false;
+        return BLE_ATT_ERR_UNLIKELY;
+    }
+    ble_ota_received += len;
+    return 0;
+}
+
 // Control: 0x00=stop notify, 0x01=start notify, 0x02=ping LED,
 //          0x10=start OBD2 poll, 0x11=stop OBD2 poll, 0x12=read DTCs, 0x13=reset trip
+//          0x20=begin BLE OTA (+4byte size), 0x21=finish OTA, 0x22=abort OTA
 static int can_ctrl_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
@@ -960,6 +1018,56 @@ static int can_ctrl_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                 metrics_reset_trip();
                 ESP_LOGI(TAG, "BLE: trip reset");
                 break;
+            case 0x20: {
+                if (OS_MBUF_PKTLEN(ctxt->om) >= 5) {
+                    uint32_t fw_size;
+                    os_mbuf_copydata(ctxt->om, 1, 4, &fw_size);
+                    ble_ota_partition = esp_ota_get_next_update_partition(NULL);
+                    if (!ble_ota_partition || fw_size > ble_ota_partition->size) {
+                        ESP_LOGE(TAG, "BLE OTA: invalid partition or size %lu", (unsigned long)fw_size);
+                        break;
+                    }
+                    esp_err_t e = esp_ota_begin(ble_ota_partition, OTA_WITH_SEQUENTIAL_WRITES, &ble_ota_handle);
+                    if (e != ESP_OK) {
+                        ESP_LOGE(TAG, "BLE OTA: begin failed: %s", esp_err_to_name(e));
+                        break;
+                    }
+                    ble_ota_total = fw_size;
+                    ble_ota_received = 0;
+                    ble_ota_active = true;
+                    if (obd2_polling_active && obd2_poll_task_handle) {
+                        obd2_polling_active = false;
+                        vTaskDelete(obd2_poll_task_handle);
+                        obd2_poll_task_handle = NULL;
+                    }
+                    ESP_LOGI(TAG, "BLE OTA: started, expecting %lu bytes", (unsigned long)fw_size);
+                }
+                break;
+            }
+            case 0x21: {
+                if (!ble_ota_active) break;
+                esp_err_t e = esp_ota_end(ble_ota_handle);
+                if (e != ESP_OK) {
+                    ESP_LOGE(TAG, "BLE OTA: verify failed: %s", esp_err_to_name(e));
+                    ble_ota_active = false;
+                    break;
+                }
+                ESP_ERROR_CHECK(esp_ota_set_boot_partition(ble_ota_partition));
+                ble_ota_active = false;
+                ESP_LOGI(TAG, "BLE OTA: complete (%lu bytes), rebooting", (unsigned long)ble_ota_received);
+                vTaskDelay(pdMS_TO_TICKS(500));
+                esp_restart();
+                break;
+            }
+            case 0x22:
+                if (ble_ota_active) {
+                    esp_ota_abort(ble_ota_handle);
+                    ble_ota_active = false;
+                    ble_ota_received = 0;
+                    ble_ota_total = 0;
+                    ESP_LOGI(TAG, "BLE OTA: aborted");
+                }
+                break;
             }
         }
     }
@@ -998,6 +1106,17 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                 .uuid = &dtc_chr_uuid.u,
                 .access_cb = dtc_chr_access,
                 .val_handle = &dtc_chr_handle,
+                .flags = BLE_GATT_CHR_F_READ,
+            },
+            {
+                .uuid = &ota_data_chr_uuid.u,
+                .access_cb = ota_data_chr_access,
+                .val_handle = &ota_data_chr_handle,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE_NO_RSP,
+            },
+            {
+                .uuid = &fw_version_chr_uuid.u,
+                .access_cb = fw_version_chr_access,
                 .flags = BLE_GATT_CHR_F_READ,
             },
             { 0 },

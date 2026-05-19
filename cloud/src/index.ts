@@ -37,6 +37,10 @@ export default {
       return json({ ok: true });
     }
 
+    if (url.pathname === "/api/firmware/latest" && request.method === "GET") {
+      return handleFirmwareLatest(env);
+    }
+
     if (!authorize(request, env)) {
       return json({ error: "unauthorized" }, 401);
     }
@@ -52,6 +56,22 @@ export default {
     return json({ error: "not found" }, 404);
   },
 };
+
+async function handleFirmwareLatest(env: Env): Promise<Response> {
+  const res = await fetch(
+    "https://api.github.com/repos/Pakzartl/esp32-obd2/releases/latest",
+    { headers: { "User-Agent": "adv350-worker" } }
+  );
+  if (!res.ok) return json({ error: "github unavailable" }, 502);
+  const release = await res.json<{ tag_name: string; body: string; assets: { name: string; size: number; browser_download_url: string }[] }>();
+  const bin = release.assets?.find((a) => a.name.endsWith(".bin"));
+  return json({
+    version: release.tag_name?.replace(/^v/, ""),
+    changelog: release.body ?? "",
+    download_url: bin?.browser_download_url ?? null,
+    size: bin?.size ?? 0,
+  });
+}
 
 async function handleBatchInsert(request: Request, env: Env): Promise<Response> {
   const body = await request.json<{ device_id?: string; rows: TelemetryRow[] }>();
