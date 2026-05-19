@@ -100,7 +100,7 @@ ECU ← UDS Poll (29-bit extended CAN, 500 kbps)
 | Cloud | Cloudflare D1 + Workers | Free tier: 5GB storage, 100K req/day, APAC edge |
 
 **ที่ไม่เลือก:**
-- ~~Rust + esp-idf-hal~~ — tried early (firmware/ dir), pivoted to C for faster iteration
+- ~~Rust + esp-idf-hal~~ — tried early, pivoted to C for faster iteration
 - ~~ESP32-S3 N16R8~~ — original plan, pivoted to ESP32 for prototyping
 - ~~Supabase~~ — pivoted to Cloudflare D1 for simpler deployment
 
@@ -161,7 +161,7 @@ F = +12V (battery, switched by ignition)
 ```
 adv350-logger/
 ├── CLAUDE.md
-├── poc-can-sniffer/           # ACTIVE firmware (ESP32, C, ESP-IDF)
+├── firmware/           # ACTIVE firmware (ESP32, C, ESP-IDF)
 │   ├── main/
 │   │   ├── main.c             # Entry: TWAI, BLE, WiFi, UDS poll, HTTP server
 │   │   ├── obd2.c             # Honda UDS engine (29-bit extended CAN)
@@ -170,7 +170,6 @@ adv350-logger/
 │   ├── CMakeLists.txt
 │   ├── sdkconfig.defaults     # 4MB flash, NimBLE, TWAI, WiFi, OTA
 │   └── partitions.csv         # OTA_0 + OTA_1 (1.75MB each)
-├── firmware/                  # INACTIVE — Rust/ESP32-S3 loopback test (legacy)
 ├── app/                       # Flutter app
 │   ├── lib/
 │   │   ├── main.dart
@@ -193,14 +192,13 @@ adv350-logger/
 │   └── package.json
 ├── docs/
 │   └── can-ids.md             # Complete Honda ADV350 CAN RE documentation
-└── backups/                   # Old firmware snapshots
 ```
 
 ---
 
 ## Key Configuration
 
-### `poc-can-sniffer/sdkconfig.defaults`
+### `firmware/sdkconfig.defaults`
 ```
 # Flash (4MB)
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
@@ -233,7 +231,7 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 CONFIG_ESP_BROWNOUT_DET=n
 ```
 
-### `poc-can-sniffer/partitions.csv`
+### `firmware/partitions.csv`
 ```
 # Name,    Type, SubType,  Offset,    Size
 nvs,       data, nvs,      0x9000,    0x6000     (24 KB)

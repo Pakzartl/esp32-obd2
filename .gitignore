@@ -2,12 +2,11 @@ target/
 .omc/
 *.log
 .DS_Store
-poc-can-sniffer/build/
-poc-can-sniffer/sdkconfig
-poc-can-sniffer/managed_components/
-poc-can-sniffer/dependencies.lock
-poc-can-sniffer/.cache/
+firmware/build/
+firmware/sdkconfig
+firmware/managed_components/
+firmware/dependencies.lock
+firmware/.cache/
 cloud/node_modules/
 .wrangler/
-backups/
 ψ/
