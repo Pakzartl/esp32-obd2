@@ -82,19 +82,37 @@ class _StartupScreenState extends State<StartupScreen> {
     );
   }
 
+  void _goDemo() {
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DashboardScreen(bleService: _bleService),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.grey[900],
-      body: const Center(
+      body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            CircularProgressIndicator(color: Colors.blue),
-            SizedBox(height: 16),
-            Text(
+            const CircularProgressIndicator(color: Colors.blue),
+            const SizedBox(height: 16),
+            const Text(
               'Connecting to ADV350...',
               style: TextStyle(color: Colors.white70, fontSize: 16),
+            ),
+            const SizedBox(height: 32),
+            TextButton(
+              onPressed: _goDemo,
+              child: const Text(
+                'Skip — Demo Mode',
+                style: TextStyle(color: Colors.white38, fontSize: 14),
+              ),
             ),
           ],
         ),

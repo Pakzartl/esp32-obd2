@@ -543,13 +543,15 @@ static esp_err_t api_scan_handler(httpd_req_t *req)
 
 static void can_sniffer_task(void *arg)
 {
-    // Run diagnostics first
-    ESP_LOGI(TAG, "Running CAN diagnostics...");
-    diag_done = false;
-    xTaskCreatePinnedToCore(can_diag_task, "can_diag", 4096, NULL, 5, NULL, 1);
-    while (!diag_done) vTaskDelay(pdMS_TO_TICKS(100));
-    ESP_LOGI(TAG, "CAN diagnostics complete, starting sniffer...");
-    vTaskDelay(pdMS_TO_TICKS(500));
+    // Run diagnostics only in DEV mode (PROD already knows the protocol)
+    if (current_mode == MODE_DEV) {
+        ESP_LOGI(TAG, "Running CAN diagnostics (DEV mode)...");
+        diag_done = false;
+        xTaskCreatePinnedToCore(can_diag_task, "can_diag", 4096, NULL, 5, NULL, 1);
+        while (!diag_done) vTaskDelay(pdMS_TO_TICKS(100));
+        ESP_LOGI(TAG, "CAN diagnostics complete");
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
 
     twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO, CAN_RX_GPIO, TWAI_MODE_NORMAL);
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
@@ -925,13 +927,11 @@ static int can_ctrl_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             switch (val) {
             case 0x00:
                 ble_live_notify = false;
-                ble_data_notify = false;
-                ESP_LOGI(TAG, "BLE: all notify OFF");
+                ESP_LOGI(TAG, "BLE: CAN raw notify OFF");
                 break;
             case 0x01:
                 ble_live_notify = true;
-                ble_data_notify = true;
-                ESP_LOGI(TAG, "BLE: notify ON");
+                ESP_LOGI(TAG, "BLE: CAN raw notify ON");
                 break;
             case 0x02:
                 pending_led_blink = 3;
@@ -1039,13 +1039,17 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
         ble_live_notify = false;
+        ble_data_notify = false;
         ESP_LOGI(TAG, "BLE: disconnected, reason=%d", event->disconnect.reason);
         xTaskCreate(ble_reboot_task, "ble_reboot", 2048, NULL, 1, NULL);
         break;
     case BLE_GAP_EVENT_SUBSCRIBE:
         if (event->subscribe.attr_handle == can_frame_chr_handle) {
             ble_live_notify = event->subscribe.cur_notify;
-            ESP_LOGI(TAG, "BLE: CAN notify %s", ble_live_notify ? "ON" : "OFF");
+            ESP_LOGI(TAG, "BLE: CAN raw notify %s", ble_live_notify ? "ON" : "OFF");
+        } else if (event->subscribe.attr_handle == vehicle_data_chr_handle) {
+            ble_data_notify = event->subscribe.cur_notify;
+            ESP_LOGI(TAG, "BLE: vehicle data notify %s", ble_data_notify ? "ON" : "OFF");
         }
         break;
     case BLE_GAP_EVENT_MTU:
@@ -1225,6 +1229,9 @@ static void start_prod_mode(void)
     xTaskCreatePinnedToCore(can_sniffer_task, "can_sniffer", 4096, NULL, 5, NULL, 1);
     xTaskCreatePinnedToCore(led_task, "led_task", 2048, NULL, 3, NULL, 1);
     xTaskCreatePinnedToCore(metrics_task, "metrics", 3072, NULL, 4, NULL, 1);
+    xTaskCreatePinnedToCore(obd2_poll_task, "obd2_poll", 4096, NULL, 4, &obd2_poll_task_handle, 1);
+    obd2_polling_active = true;
+    ESP_LOGI(TAG, "UDS polling auto-started (PROD mode)");
 
     gpio_set_level(LED_GPIO, 1);
     ESP_LOGI(TAG, "LED off (GPIO%d)", LED_GPIO);

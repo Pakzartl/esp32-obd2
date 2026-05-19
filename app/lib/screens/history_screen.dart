@@ -72,11 +72,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         size: 20,
                       ),
                       title: Text(
-                        '${t.speed} km/h  |  ${t.rpm} rpm  |  Gear ${t.gear == 0 ? "N" : t.gear}',
+                        '${t.speed} km/h  |  ${t.rpm} rpm  |  ${t.throttle}% throttle',
                         style: const TextStyle(fontSize: 14),
                       ),
                       subtitle: Text(
-                        '${fmt.format(t.timestamp)}  |  ${t.coolantTemp}°C  |  Fuel ${t.fuelLevel}%',
+                        '${fmt.format(t.timestamp)}  |  ${t.coolantTemp}°C  |  MAP ${t.mapKpa} kPa',
                         style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                       ),
                     );

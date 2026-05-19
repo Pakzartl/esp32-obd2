@@ -33,7 +33,7 @@ class _RawLogScreenState extends State<RawLogScreen> {
         time: DateTime.now(),
         canId: t.rpm,
         dlc: t.speed,
-        data: [t.throttle, t.coolantTemp, t.gear, t.fuelLevel],
+        data: [t.throttle, t.coolantTemp, t.mapKpa, t.iat],
       ));
       if (_entries.length > _maxEntries) {
         _entries.removeRange(0, _entries.length - _maxEntries);

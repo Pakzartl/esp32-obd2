@@ -14,7 +14,7 @@ class DatabaseService {
     final path = join(await getDatabasesPath(), 'adv350.db');
     return openDatabase(
       path,
-      version: 1,
+      version: 3,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE telemetry (
@@ -23,12 +23,28 @@ class DatabaseService {
             speed INTEGER NOT NULL,
             throttle INTEGER NOT NULL,
             coolant_temp INTEGER NOT NULL,
-            gear INTEGER NOT NULL,
-            fuel_level INTEGER NOT NULL,
+            map_kpa INTEGER NOT NULL DEFAULT 0,
+            iat INTEGER NOT NULL DEFAULT 0,
+            engine_load INTEGER NOT NULL DEFAULT 0,
+            ignition_timing INTEGER NOT NULL DEFAULT 0,
+            raw_ble_hex TEXT NOT NULL DEFAULT '',
             timestamp INTEGER NOT NULL,
             synced INTEGER NOT NULL DEFAULT 0
           )
         ''');
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          await db.execute('ALTER TABLE telemetry ADD COLUMN map_kpa INTEGER NOT NULL DEFAULT 0');
+          await db.execute('ALTER TABLE telemetry ADD COLUMN iat INTEGER NOT NULL DEFAULT 0');
+          await db.execute('ALTER TABLE telemetry ADD COLUMN engine_load INTEGER NOT NULL DEFAULT 0');
+          await db.execute('ALTER TABLE telemetry ADD COLUMN ignition_timing INTEGER NOT NULL DEFAULT 0');
+          await db.execute('ALTER TABLE telemetry RENAME COLUMN gear TO raw_gear');
+          await db.execute('ALTER TABLE telemetry RENAME COLUMN fuel_level TO raw_fuel');
+        }
+        if (oldVersion < 3) {
+          await db.execute("ALTER TABLE telemetry ADD COLUMN raw_ble_hex TEXT NOT NULL DEFAULT ''");
+        }
       },
     );
   }

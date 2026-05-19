@@ -7,6 +7,7 @@ import '../widgets/gauge_card.dart';
 import 'scan_screen.dart';
 import 'history_screen.dart';
 import 'raw_log_screen.dart';
+import 'metrics_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final BleService bleService;
@@ -21,11 +22,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final _db = DatabaseService();
   Telemetry _current = Telemetry.empty();
   bool _connected = true;
-  bool _recording = false;
-  int _recordCount = 0;
+  int _savedCount = 0;
   int _tabIndex = 0;
   StreamSubscription? _telemetrySub;
   StreamSubscription? _connectionSub;
+  DateTime? _lastSave;
 
   @override
   void initState() {
@@ -33,9 +34,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     widget.bleService.startLiveNotify();
     _telemetrySub = widget.bleService.telemetryStream.listen((t) {
       setState(() => _current = t);
-      if (_recording) {
-        _db.insertTelemetry(t);
-        setState(() => _recordCount++);
+      // Auto-save at 1 Hz
+      final now = DateTime.now();
+      if (_lastSave == null || now.difference(_lastSave!).inMilliseconds >= 1000) {
+        if (t.rpm > 0 || t.speed > 0 || t.coolantTemp > 0) {
+          _db.insertTelemetry(t);
+          _savedCount++;
+          _lastSave = now;
+        }
       }
     });
     _connectionSub = widget.bleService.connectionStream.listen((connected) {
@@ -55,65 +61,84 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.dispose();
   }
 
-  void _toggleRecording() {
-    setState(() {
-      _recording = !_recording;
-      if (_recording) _recordCount = 0;
-    });
-  }
-
   Widget _buildGauges() {
     return Column(
       children: [
+        // Hero speed
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          child: Column(
+            children: [
+              Text(
+                '${_current.speed}',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 72,
+                  fontWeight: FontWeight.bold,
+                  fontFamily: 'monospace',
+                ),
+              ),
+              const Text(
+                'km/h',
+                style: TextStyle(color: Colors.white54, fontSize: 16),
+              ),
+            ],
+          ),
+        ),
         Expanded(
           child: Padding(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.all(8),
             child: GridView.count(
               crossAxisCount: 2,
-              mainAxisSpacing: 12,
-              crossAxisSpacing: 12,
-              childAspectRatio: 1.2,
+              mainAxisSpacing: 8,
+              crossAxisSpacing: 8,
+              childAspectRatio: 1.5,
               children: [
                 GaugeCard(
-                  label: 'CAN ID',
-                  value: '0x${_current.rpm.toRadixString(16).toUpperCase()}',
+                  label: 'RPM',
+                  value: '${_current.rpm}',
                   unit: '',
-                  icon: Icons.memory,
-                  color: Colors.orange,
+                  icon: Icons.speed,
+                  color: _current.rpm > 7000 ? Colors.red : Colors.orange,
                 ),
                 GaugeCard(
-                  label: 'DLC',
-                  value: '${_current.speed}',
-                  unit: 'bytes',
-                  icon: Icons.data_usage,
-                  color: Colors.blue,
-                ),
-                GaugeCard(
-                  label: 'Byte 0',
-                  value: '0x${_current.throttle.toRadixString(16).toUpperCase().padLeft(2, '0')}',
-                  unit: '',
-                  icon: Icons.grid_view,
+                  label: 'Throttle',
+                  value: '${_current.throttle}',
+                  unit: '%',
+                  icon: Icons.flash_on,
                   color: Colors.green,
                 ),
                 GaugeCard(
-                  label: 'Byte 1',
-                  value: '0x${_current.coolantTemp.toRadixString(16).toUpperCase().padLeft(2, '0')}',
-                  unit: '',
-                  icon: Icons.grid_view,
-                  color: Colors.cyan,
+                  label: 'Coolant',
+                  value: '${_current.coolantTemp}',
+                  unit: '°C',
+                  icon: Icons.thermostat,
+                  color: _current.coolantTemp > 105
+                      ? Colors.red
+                      : _current.coolantTemp > 90
+                          ? Colors.orange
+                          : Colors.blue,
                 ),
                 GaugeCard(
-                  label: 'Byte 2',
-                  value: '0x${_current.gear.toRadixString(16).toUpperCase().padLeft(2, '0')}',
-                  unit: '',
-                  icon: Icons.grid_view,
+                  label: 'MAP',
+                  value: '${_current.mapKpa}',
+                  unit: 'kPa',
+                  icon: Icons.compress,
                   color: Colors.purple,
                 ),
                 GaugeCard(
-                  label: 'Byte 3',
-                  value: '0x${_current.fuelLevel.toRadixString(16).toUpperCase().padLeft(2, '0')}',
-                  unit: '',
-                  icon: Icons.grid_view,
+                  label: 'IAT',
+                  value: '${_current.iat}',
+                  unit: '°C',
+                  icon: Icons.air,
+                  color: Colors.cyan,
+                ),
+                GaugeCard(
+                  label: 'Load',
+                  value: '${_current.engineLoad}',
+                  unit: '%',
+                  icon: Icons.engineering,
                   color: Colors.amber,
                 ),
               ],
@@ -188,14 +213,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   style: const TextStyle(color: Colors.white, fontSize: 13),
                 ),
                 const Spacer(),
-                if (_recording)
+                if (_savedCount > 0)
                   Row(
                     children: [
-                      const Icon(Icons.fiber_manual_record, color: Colors.red, size: 14),
+                      const Icon(Icons.save, color: Colors.white38, size: 14),
                       const SizedBox(width: 4),
                       Text(
-                        'REC $_recordCount',
-                        style: const TextStyle(color: Colors.red, fontSize: 13),
+                        '$_savedCount saved',
+                        style: const TextStyle(color: Colors.white38, fontSize: 12),
                       ),
                     ],
                   ),
@@ -205,18 +230,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
           Expanded(
             child: _tabIndex == 0
                 ? _buildGauges()
-                : RawLogScreen(bleService: widget.bleService),
+                : _tabIndex == 1
+                    ? const MetricsScreen()
+                    : RawLogScreen(bleService: widget.bleService),
           ),
         ],
       ),
-      floatingActionButton: _tabIndex == 0
-          ? FloatingActionButton.extended(
-              onPressed: _toggleRecording,
-              backgroundColor: _recording ? Colors.red : Colors.green,
-              icon: Icon(_recording ? Icons.stop : Icons.fiber_manual_record),
-              label: Text(_recording ? 'Stop' : 'Record'),
-            )
-          : null,
+      floatingActionButton: null,
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _tabIndex,
         onTap: (i) => setState(() => _tabIndex = i),
@@ -227,6 +247,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
           BottomNavigationBarItem(
             icon: Icon(Icons.dashboard),
             label: 'Dashboard',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.analytics),
+            label: 'Metrics',
           ),
           BottomNavigationBarItem(
             icon: Icon(Icons.terminal),
