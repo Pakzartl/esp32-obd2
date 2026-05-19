@@ -1,0 +1,15 @@
+{
+  "name": "adv350-telemetry-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-05-01",
+  "routes": [
+    { "pattern": "adv350.pakzartl.xyz/*", "zone_name": "pakzartl.xyz" }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "adv350-telemetry",
+      "database_id": "3d59303a-22da-4914-b155-f01df746f86e"
+    }
+  ]
+}

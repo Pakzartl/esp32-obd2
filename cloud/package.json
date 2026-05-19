@@ -1,0 +1,14 @@
+{
+  "name": "adv350-telemetry-api",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate": "wrangler d1 execute adv350-telemetry --remote --file=schema.sql"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250501.0",
+    "typescript": "^5.8.0",
+    "wrangler": "^4.93.0"
+  }
+}

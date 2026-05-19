@@ -6,3 +6,8 @@ poc-can-sniffer/build/
 poc-can-sniffer/sdkconfig
 poc-can-sniffer/managed_components/
 poc-can-sniffer/dependencies.lock
+poc-can-sniffer/.cache/
+cloud/node_modules/
+.wrangler/
+backups/
+ψ/

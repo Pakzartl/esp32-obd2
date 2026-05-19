@@ -1,202 +1,114 @@
 # ADV350 OBD Logger — Project Context
 
 > **Project**: Honda ADV350 OBD-II data logger & analyzer
-> **Hardware**: ESP32-S3 N16R8 (DevKitC-1 compatible breakout)
-> **Stack**: Rust + esp-idf-hal (std)
-> **Backend**: Supabase (Postgres) — pipeline ส่งข้อมูลขึ้น cloud
+> **Hardware**: ESP32 (4MB Flash, no PSRAM) + SN65HVD230 CAN transceiver
+> **Firmware**: C / ESP-IDF v5.x
+> **App**: Flutter (Dart) — BLE + local SQLite
+> **Cloud**: Cloudflare D1 + Workers
 
 ---
 
-## 🎯 Context for Claude Code
+## Context for Claude Code
 
-โปรเจกต์นี้เป็น embedded firmware project สำหรับติดตั้งบน Honda ADV350 (Euro 5) เพื่ออ่าน CAN bus ผ่าน OBD 6-pin connector แล้วส่งข้อมูล telemetry ขึ้น Supabase
+Embedded firmware project สำหรับ Honda ADV350 (Euro 5) อ่าน CAN bus ผ่าน OBD 6-pin connector ส่ง telemetry ผ่าน BLE ไปยัง Flutter app แล้ว sync ขึ้น Cloudflare D1
 
 **เมื่อช่วยเขียนโค้ด ให้คำนึงถึง:**
 
-- **Resource constraints**: ESP32-S3 มี 16MB Flash + 8MB Octal PSRAM + 512KB SRAM — ใช้ memory อย่างประหยัด
-- **No-std friendly**: แม้ใช้ esp-idf-hal (std) ก็พยายามหลีก allocation ใน hot path
-- **Real-time CAN**: frame rate ของ CAN bus อาจสูงถึง 1000 frames/sec — buffer ต้อง lock-free หรือ ring buffer
-- **Power loss safe**: รถมอเตอร์ไซค์ตัดไฟกระทันหัน — เขียน flash ต้อง atomic, ใช้ NVS commit pattern
+- **Resource constraints**: ESP32 มี 4MB Flash, ไม่มี PSRAM — ใช้ memory อย่างประหยัด, static allocation เท่าที่ทำได้
+- **Real-time CAN**: Honda ECU ต้อง poll (ไม่ broadcast) — UDS request/response cycle ต้องเร็ว
+- **Power loss safe**: รถมอเตอร์ไซค์ตัดไฟกระทันหัน — NVS commit pattern
 - **Thermal**: รถจอดแดดไทย ambient ถึง 70°C — ใช้ algorithm ที่ CPU ต่ำ
-- **OTA-first**: ทุก feature ต้องคิด OTA ตั้งแต่แรก — ห้ามมี state ที่ flash ใหม่แล้วพัง
-- **อ่านอย่างเดียว** ในเฟสนี้ — **ห้ามเขียน CAN frame กลับเข้า ECU** จนกว่า reverse engineer สำเร็จและทดสอบบน bench
+- **OTA-first**: ทุก feature ต้องคิด OTA ตั้งแต่แรก — OTA_0/OTA_1 partition, rollback support
+- **READ-ONLY CAN** — ห้ามเขียน CAN frame ที่ไม่ใช่ UDS ReadDataByIdentifier (0x22)
+- **Raw data integrity** — ALWAYS store raw bytes (raw_ble_hex) alongside decoded data, NEVER discard
 
 **Coding conventions:**
-- Rust 2021 edition
-- ใช้ `tracing` หรือ `log` + `esp-idf-svc` logger สำหรับ logging
-- Error handling: ใช้ `anyhow::Result` ใน application code, `thiserror` สำหรับ library code
-- Async: ใช้ `tokio` ผ่าน esp-idf-hal (std mode รองรับ)
-- Comments: ภาษาอังกฤษสำหรับ technical comments, ไทยได้ถ้าอธิบาย business logic
+- C (ESP-IDF), ไม่ใช่ Rust
+- Logging: `ESP_LOGI`, `ESP_LOGW`, `ESP_LOGE` macros
+- Error handling: `esp_err_t` return codes, `ESP_ERROR_CHECK` for fatal
+- NimBLE for BLE peripheral
+- Comments: English for technical, Thai OK for business logic
 
 ---
 
-## 📦 Hardware Inventory
+## Hardware
 
-### มีอยู่แล้ว ✅
-- [x] ESP32-S3 core board N16R8 (16MB Flash + 8MB Octal PSRAM, DevKitC-1 compatible)
+### Deployed
+- [x] ESP32 DevKit (4MB Flash, no PSRAM)
+- [x] SN65HVD230 CAN Transceiver (GPIO4=TX, GPIO5=RX)
+- [x] OBD 6-pin Honda Euro 5 cable
+- [x] FT232 USB-Serial adapter (/dev/cu.usbserial-10)
 - [x] USB-C cable (data)
+- [x] Breadboard + jumper wires
 
-### Phase 1 — ต้องซื้อก่อนเริ่ม CAN integration
-- [ ] SN65HVD230 CAN Transceiver module (~80 บาท)
-- [ ] OBD 6-pin Honda Euro 5 → flying lead cable (~500 บาท)
-- [ ] Breadboard + jumper wires (~200 บาท)
-- [ ] Multimeter (~500–1,500 บาท)
-
-### Phase 2 — สำหรับ deploy บนรถ
-- [ ] DC-DC step-down 12V→5V/1A automotive grade (~80 บาท)
-- [ ] Inline fuse holder + 1A fuse (~80 บาท)
-- [ ] กล่องกันน้ำ IP65 (~150 บาท)
-- [ ] สายไฟ + ขั้วต่อ automotive (~150 บาท)
-- [ ] PCB prototype (~150 บาท)
-
-### Phase 3 — Optional expansion
-- [ ] SIM7600 4G + GNSS module via UART (~1,500 บาท)
-- [ ] หรือแยก: u-blox NEO-M9N GPS (~800 บาท)
+### Phase 2 — Production deploy
+- [ ] DC-DC step-down 12V→5V/1A automotive grade
+- [ ] Inline fuse holder + 1A fuse
+- [ ] Waterproof enclosure IP65
+- [ ] Automotive wiring + crimp connectors
 
 ---
 
-## 🏗️ Architecture Overview
+## Architecture
 
 ```
-┌─────────────────────────────────────────┐
-│  Honda ADV350 (Euro 5)                  │
-│  ECU → CAN Bus (500 kbps)               │
-│       ↓                                  │
-│  6-pin OBD Connector (ISO 19689)        │
-│  Pin A=GND, B=CAN-H, E=CAN-L, F=+12V   │
-└─────────────────────────────────────────┘
-              ↓
-┌─────────────────────────────────────────┐
-│  SN65HVD230 CAN Transceiver             │
-│  (3.3V differential CAN-H/CAN-L → TTL)  │
-└─────────────────────────────────────────┘
-              ↓
-┌─────────────────────────────────────────┐
-│  ESP32-S3 N16R8                         │
-│  ├── TWAI controller (CAN driver)       │
-│  ├── PSRAM ring buffer (1000+ frames)   │
-│  ├── Frame decoder (Honda-specific IDs) │
-│  ├── WiFi station (home/4G hotspot)     │
-│  ├── BLE peripheral (mobile app)        │
-│  ├── HTTPS client (Supabase REST)       │
-│  ├── LittleFS (offline log buffer)      │
-│  ├── NVS (config storage)               │
-│  └── OTA updater (HTTPS)                │
-└─────────────────────────────────────────┘
-              ↓
-┌─────────────────────────────────────────┐
-│  Supabase (Postgres + Realtime)         │
-│  Table: bike_telemetry                   │
-│  ↓                                       │
-│  Next.js Dashboard (real-time graphs)   │
-└─────────────────────────────────────────┘
+Honda ADV350 (Euro 5)
+ECU ← UDS Poll (29-bit extended CAN, 500 kbps)
+     ↓ Response
+┌─────────────────────────────────┐
+│  ESP32 + SN65HVD230             │
+│  ├── TWAI (CAN driver, 500kbps) │
+│  ├── UDS engine (0x18DA10F1)    │
+│  ├── OBD2 decoder (14 DIDs)     │
+│  ├── Derived metrics            │
+│  ├── NimBLE peripheral          │
+│  ├── WiFi + HTTP server (debug) │
+│  ├── NVS (config: DEV/PROD)     │
+│  └── OTA (dual partition)       │
+└─────────────────────────────────┘
+     ↓ BLE GATT notify
+┌─────────────────────────────────┐
+│  Flutter App (Android/iOS)      │
+│  ├── BLE scan + connect         │
+│  ├── UDS response decoder       │
+│  ├── SQLite (adv350.db)         │
+│  ├── Dashboard (decoded gauges) │
+│  ├── Metrics (MAX/AVG/MIN)      │
+│  └── Cloud sync → D1            │
+└─────────────────────────────────┘
+     ↓ HTTPS batch POST
+┌─────────────────────────────────┐
+│  Cloudflare D1 + Worker         │
+│  POST /api/telemetry (batch)    │
+│  GET  /api/telemetry (query)    │
+└─────────────────────────────────┘
 ```
 
 ---
 
-## 🛠️ Tech Stack Decisions
+## Tech Stack
 
 | Component | Choice | Rationale |
 |---|---|---|
-| MCU | ESP32-S3 N16R8 | TWAI ในตัว, BLE 5.0, WiFi, PSRAM 8MB, automotive-grade temp |
-| Language | Rust + esp-idf-hal | Type safety, std support, มี ecosystem ที่ดี, port code ง่ายถ้าย้าย platform |
-| Async runtime | tokio (via esp-idf) | Familiar, รองรับ HTTPS, BLE concurrent |
-| CAN driver | esp-idf-svc TWAI | Native ESP-IDF support, hardware accelerated |
-| Storage | LittleFS + NVS | Power-loss safe, wear leveling |
-| Cloud | Supabase | Postgres, REST API ง่าย, free tier เพียงพอ, มี Realtime |
-| Backend (future) | NestJS (existing Skilllane stack) | Reuse existing infrastructure |
-| Dashboard | Next.js + Recharts | Familiar stack, real-time via Supabase subscription |
+| MCU | ESP32 (original) | TWAI built-in, BLE + WiFi, cheap, proven |
+| Language | C / ESP-IDF v5.x | Direct hardware access, mature ecosystem |
+| CAN driver | TWAI (ESP-IDF) | Native, hardware accelerated |
+| BLE | NimBLE | Lightweight, single connection peripheral |
+| App | Flutter + Dart | Cross-platform, fast UI iteration |
+| App storage | SQLite (sqflite) | Local-first, offline capable |
+| App BLE | flutter_blue_plus | Mature, well-documented |
+| Cloud | Cloudflare D1 + Workers | Free tier: 5GB storage, 100K req/day, APAC edge |
 
-**ที่ไม่เลือกและทำไม:**
-- ❌ Raspberry Pi 4/5 — ร้อนเกิน, SD corruption เสี่ยง, overkill
-- ❌ Arduino IDE — ไม่ production-grade, debug ยาก
-- ❌ MicroPython — performance ไม่พอสำหรับ CAN ความเร็วสูง
-- ❌ ESP-IDF (C/C++) — Rust ปลอดภัยกว่าและ developer ถนัดกว่า
-
----
-
-## 🚀 Development Roadmap
-
-### Phase 0 — Toolchain Setup (วันแรก)
-- [ ] ติดตั้ง Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-- [ ] ติดตั้ง espup: `cargo install espup && espup install`
-- [ ] ติดตั้ง flash tools: `cargo install cargo-espflash espflash`
-- [ ] เพิ่ม `source ~/export-esp.sh` ใน `.zshrc`
-- [ ] Generate template: `cargo generate esp-rs/esp-idf-template cargo` (เลือก esp32s3, std)
-- [ ] Verify VS Code + rust-analyzer ทำงานได้
-
-### Phase 1 — Hardware Bring-up
-- [ ] เสียบ USB-C เข้ารู "USB" (native USB-Serial-JTAG)
-- [ ] Verify device: `ls /dev/cu.usbmodem*`
-- [ ] First flash: hello world + LED blink (GPIO 48)
-- [ ] **Verify PSRAM 8MB**:
-  ```rust
-  let v: Vec<u8> = vec![0u8; 4 * 1024 * 1024];
-  log::info!("PSRAM allocation OK: {} bytes", v.len());
-  ```
-- [ ] Verify Flash 16MB ใน partition table
-
-### Phase 2 — Core Capabilities (สัปดาห์แรก)
-- [ ] WiFi station mode + connect home WiFi
-- [ ] HTTPS GET test (httpbin.org)
-- [ ] HTTPS POST ไป Supabase test endpoint
-- [ ] BLE peripheral basic (advertise + 1 read characteristic)
-- [ ] **TWAI loopback test** (ไม่ต้องมี transceiver):
-  ```rust
-  let config = twai::config::Config::new(twai::TwaiMode::SelfTest)
-      .set_bitrate(twai::BitRate::B500K);
-  ```
-- [ ] Send/receive dummy CAN frame in loopback
-
-### Phase 3 — Software Architecture (สัปดาห์ที่ 2)
-- [ ] NVS config storage (WiFi creds, Supabase URL/key)
-- [ ] LittleFS partition + mount
-- [ ] OTA partition table (`partitions.csv`)
-- [ ] HTTPS OTA implementation
-- [ ] Rollback on boot failure (3 strikes)
-- [ ] Connection state machine
-- [ ] Frame buffer (ring buffer in PSRAM, 1000+ frames)
-- [ ] Batch HTTP POST to Supabase (100 frames/batch)
-- [ ] Retry + exponential backoff
-
-### Phase 4 — CAN Integration (เมื่อ transceiver มา)
-- [ ] Wire SN65HVD230 → ESP32-S3 (GPIO 4 = TX, GPIO 5 = RX, 3.3V, GND)
-- [ ] Bench test กับ ESP32 อีกตัวที่ส่ง CAN frame (หรือ CAN simulator)
-- [ ] ทดสอบกับ ELM327 + OBD adapter ที่มี CAN simulation mode
-
-### Phase 5 — Vehicle Integration (เมื่อ OBD cable + รถพร้อม)
-- [ ] วัด pinout ที่ ADV350 ด้วย multimeter
-- [ ] ทำสาย adapter (OBD 6-pin → CAN HAT + 12V → DC-DC)
-- [ ] **READ-ONLY** capture session 30 นาที (ignition on, no start)
-- [ ] **READ-ONLY** capture session 30 นาที (engine running, idle)
-- [ ] **READ-ONLY** capture session 30 นาที (riding, varied throttle)
-- [ ] Export logs → SavvyCAN / Wireshark for analysis
-- [ ] Reverse-engineer Honda CAN IDs (RPM, speed, throttle, temp, gear)
-- [ ] Implement decoder for known IDs
-
-### Phase 6 — Production Deploy
-- [ ] Mounting solution (vibration damping + airflow)
-- [ ] กล่องกันน้ำ + heat dissipation
-- [ ] Final wiring with fuse, automotive crimp connectors
-- [ ] 24-hour soak test on bench
-- [ ] 4-hour soak test in car under sun (verify thermal headroom)
-- [ ] Monitor first week deployment closely
-
-### Phase 7 — Backend & Dashboard
-- [ ] Supabase schema (`bike_telemetry` table + indexes)
-- [ ] RLS policies (device authentication)
-- [ ] Next.js dashboard:
-  - [ ] Real-time RPM/speed graph
-  - [ ] Trip detection + history
-  - [ ] Anomaly alerts (high temp, error codes)
-  - [ ] Maintenance reminders
-- [ ] (Optional) Mobile app via React Native + Supabase
+**ที่ไม่เลือก:**
+- ~~Rust + esp-idf-hal~~ — tried early (firmware/ dir), pivoted to C for faster iteration
+- ~~ESP32-S3 N16R8~~ — original plan, pivoted to ESP32 for prototyping
+- ~~Supabase~~ — pivoted to Cloudflare D1 for simpler deployment
 
 ---
 
-## 📡 Honda ADV350 OBD Reference
+## Honda ADV350 CAN Protocol (Confirmed)
 
-### Connector: 6-pin ISO 19689 (Honda Euro 5 standard)
+### OBD Connector: 6-pin ISO 19689
 
 ```
 Pinout (looking into connector on bike):
@@ -208,233 +120,245 @@ Pinout (looking into connector on bike):
 A = GND (chassis ground)
 B = CAN-H
 C = SCS (Service Check Signal — jumper to GND for diagnostic mode)
-D = K-Line (Honda HDS / KWP2000 protocol)
+D = K-Line (Honda HDS / KWP2000 — not used)
 E = CAN-L
 F = +12V (battery, switched by ignition)
 ```
 
 ### Protocol
-- **CAN bus**: ISO 11898, 500 kbps (Honda Euro 5 standard)
-- **K-Line**: ISO 14230 (KWP2000), Honda HDS proprietary on top — **ไม่ใช้ใน project นี้**, focus CAN เท่านั้น
+- **29-bit extended CAN only** — 11-bit standard OBD2 is ignored by ECU
+- **Request**: `0x18DA10F1` (Tester F1 → ECU 10)
+- **Response**: `0x18DAF110` (ECU 10 → Tester F1)
+- **UDS ReadDataByIdentifier** (SID 0x22) with DIDs in 0xF4xx range
+- **500 kbps**, ISO-TP single frame
+- **ECU never broadcasts** — must poll
 
-### Expected CAN IDs (ต้อง verify ด้วย capture จริง)
-- ECU broadcasts ที่อาจเจอ: RPM, throttle position, coolant temp, vehicle speed, gear position, fuel level
-- Honda ไม่เปิด DBC file → ต้อง reverse engineer
+### Confirmed DIDs (14)
+
+| DID | Sensor | Formula | Unit |
+|-----|--------|---------|------|
+| 0xF40C | RPM | (A*256+B)/4 | rpm |
+| 0xF40D | Vehicle Speed | A | km/h |
+| 0xF411 | Throttle Position | A*100/255 | % |
+| 0xF405 | Coolant Temp | A-40 | °C |
+| 0xF40B | MAP | A | kPa |
+| 0xF40F | IAT | A-40 | °C |
+| 0xF404 | Engine Load | A*100/255 | % |
+| 0xF40E | Ignition Timing | A/2-64 | ° |
+| 0xF406 | Short Fuel Trim | (A-128)*100/128 | % |
+| 0xF407 | Long Fuel Trim | (A-128)*100/128 | % |
+| 0xF41C | OBD Compliance | A | enum |
+| 0xF403 | Fuel System | A | enum |
+| 0xF401 | Monitor Status | A | bitmask |
+| 0xF402 | Freeze DTC | A*256+B | code |
+
+**Not available**: Battery voltage, fuel rate (proprietary ranges scanned, empty)
 
 ---
 
-## 📁 Project Structure (Suggested)
+## Project Structure
 
 ```
 adv350-logger/
-├── CLAUDE.md                  # This file
-├── README.md
-├── .gitignore
-├── firmware/                  # Main ESP32-S3 Rust firmware
-│   ├── Cargo.toml
-│   ├── rust-toolchain.toml    # esp channel
-│   ├── sdkconfig.defaults     # ESP-IDF config (PSRAM, partitions)
-│   ├── partitions.csv         # OTA partition layout
-│   ├── build.rs
-│   └── src/
-│       ├── main.rs
-│       ├── config.rs          # NVS config management
-│       ├── wifi.rs            # WiFi connection + reconnect
-│       ├── ble.rs             # BLE peripheral service
-│       ├── can/
-│       │   ├── mod.rs
-│       │   ├── driver.rs      # TWAI wrapper
-│       │   ├── decoder.rs     # Honda CAN ID decoder
-│       │   └── buffer.rs      # Ring buffer in PSRAM
-│       ├── cloud/
-│       │   ├── mod.rs
-│       │   ├── supabase.rs    # HTTPS client
-│       │   └── batcher.rs     # Batch + retry logic
-│       ├── storage/
-│       │   ├── mod.rs
-│       │   ├── nvs.rs
-│       │   └── littlefs.rs    # Offline log buffer
-│       ├── ota.rs             # OTA update handler
-│       └── state.rs           # System state machine
-├── tools/
-│   ├── can-simulator/         # Rust util to send dummy frames for testing
-│   └── log-analyzer/          # Parse captured logs
+├── CLAUDE.md
+├── poc-can-sniffer/           # ACTIVE firmware (ESP32, C, ESP-IDF)
+│   ├── main/
+│   │   ├── main.c             # Entry: TWAI, BLE, WiFi, UDS poll, HTTP server
+│   │   ├── obd2.c             # Honda UDS engine (29-bit extended CAN)
+│   │   ├── obd2.h             # DID definitions, vehicle constants
+│   │   └── metrics.c          # Derived: fuel consumption, accel, g-force, riding score
+│   ├── CMakeLists.txt
+│   ├── sdkconfig.defaults     # 4MB flash, NimBLE, TWAI, WiFi, OTA
+│   └── partitions.csv         # OTA_0 + OTA_1 (1.75MB each)
+├── firmware/                  # INACTIVE — Rust/ESP32-S3 loopback test (legacy)
+├── app/                       # Flutter app
+│   ├── lib/
+│   │   ├── main.dart
+│   │   ├── services/
+│   │   │   ├── ble_service.dart       # GATT connect, notifications
+│   │   │   └── database_service.dart  # SQLite CRUD
+│   │   ├── models/
+│   │   │   └── telemetry.dart         # UDS decoder, raw_ble_hex storage
+│   │   └── screens/
+│   │       ├── scan_screen.dart
+│   │       ├── dashboard_screen.dart  # Decoded gauges, auto-save 1Hz
+│   │       ├── metrics_screen.dart    # Trip metrics, sparklines
+│   │       ├── raw_log_screen.dart
+│   │       └── history_screen.dart
+│   └── pubspec.yaml           # flutter_blue_plus, sqflite, shared_preferences
+├── cloud/                     # Cloudflare D1 + Worker API
+│   ├── src/index.ts           # Worker: batch insert + query
+│   ├── schema.sql             # D1 telemetry table
+│   ├── wrangler.jsonc         # D1 binding config
+│   └── package.json
 ├── docs/
-│   ├── can-ids.md             # Reverse-engineered Honda CAN IDs
-│   ├── pinout.md              # Hardware wiring diagram
-│   ├── deployment.md          # Mounting, power, troubleshooting
-│   └── ota-process.md         # OTA workflow
-├── backend/                   # NestJS API (future)
-└── dashboard/                 # Next.js (future)
+│   └── can-ids.md             # Complete Honda ADV350 CAN RE documentation
+└── backups/                   # Old firmware snapshots
 ```
 
 ---
 
-## ⚙️ Key Configuration Files
+## Key Configuration
 
-### `sdkconfig.defaults` (must-have)
+### `poc-can-sniffer/sdkconfig.defaults`
 ```
-# PSRAM (Octal, 8MB on N16R8)
-CONFIG_SPIRAM=y
-CONFIG_SPIRAM_MODE_OCT=y
-CONFIG_SPIRAM_SPEED_80M=y
-CONFIG_SPIRAM_USE_MALLOC=y
-CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+# Flash (4MB)
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
 
-# Flash (16MB on N16R8)
-CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
-CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
-
-# Partition table (custom for OTA)
+# Partition (custom OTA)
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
-# Compiler
-CONFIG_COMPILER_OPTIMIZATION_PERF=y
-CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_DISABLE=y
+# BLE (NimBLE, peripheral only)
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
 
-# Logging
-CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+# WiFi
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+
+# TWAI (CAN)
+CONFIG_TWAI_ERRATA_FIX_BUS_OFF_REC=y
+CONFIG_TWAI_ERRATA_FIX_TX_INTR_LOST=y
+CONFIG_TWAI_ERRATA_FIX_RX_FRAME_INVALID=y
+CONFIG_TWAI_ERRATA_FIX_RX_FIFO_CORRUPT=y
+
+# OTA
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# Brownout (disabled for bench — USB power insufficient)
+CONFIG_ESP_BROWNOUT_DET=n
 ```
 
-### `partitions.csv` (16MB layout with OTA)
+### `poc-can-sniffer/partitions.csv`
 ```
-# Name,    Type, SubType,  Offset,   Size,     Flags
-nvs,       data, nvs,      0x9000,   0x6000,
-phy_init,  data, phy,      0xf000,   0x1000,
-otadata,   data, ota,      0x10000,  0x2000,
-app0,      app,  ota_0,    0x20000,  0x600000,
-app1,      app,  ota_1,    0x620000, 0x600000,
-storage,   data, littlefs, 0xC20000, 0x3E0000,
+# Name,    Type, SubType,  Offset,    Size
+nvs,       data, nvs,      0x9000,    0x6000     (24 KB)
+otadata,   data, ota,      0xf000,    0x2000     (8 KB)
+phy_init,  data, phy,      0x11000,   0x1000     (4 KB)
+ota_0,     app,  ota_0,    0x20000,   0x1C0000   (1.75 MB)
+ota_1,     app,  ota_1,    0x1E0000,  0x1C0000   (1.75 MB)
 ```
-
-(app0 + app1 = 12MB for OTA, storage = ~4MB for offline logs)
 
 ---
 
-## ⚠️ Critical Constraints & Gotchas
+## BLE Protocol
 
-### Hardware
-- **Octal PSRAM ≠ Quad PSRAM** — N16R8 ใช้ Octal, ต้อง config `CONFIG_SPIRAM_MODE_OCT=y` ไม่งั้น PSRAM ใช้ไม่ได้
-- **GPIO 35, 36, 37** ใช้ไม่ได้บน N16R8 (ใช้สำหรับ Octal PSRAM internally)
-- **ห้ามใช้ GPIO 0, 45, 46** สำหรับ peripheral (strapping pins)
-- **TWAI default pins**: GPIO 4 (TX), GPIO 5 (RX) — ใช้ไม่ใช่ default ก็ได้ แต่ระวัง pin conflict
-
-### CAN
-- **อย่า write CAN frame** จนกว่าจะ reverse-engineer สำเร็จ + ทดสอบ bench — เสี่ยงทำให้ ECU เข้า limp mode
-- **Bus-off recovery** — ถ้า bus error เยอะ ESP32 จะเข้า bus-off state → ต้อง implement recovery
-- **Bitrate ต้องตรง** — Honda Euro 5 ใช้ 500 kbps; ผิด → bus error 100%
-
-### Power
-- ESP32-S3 ต้องการ 5V/500mA stable — DC-DC จากรถต้องมี filter ดี
-- **Voltage spike จาก rail ของรถ** — ใส่ TVS diode + electrolytic cap กัน
-- **Battery drain** — ถ้าจอดยาว ต้องมี deep sleep หรือ relay ตัดไฟ
-
-### Software
-- **NVS write จำกัด ~100K cycles** — อย่า write บ่อย
-- **OTA partition switching** — boot ใหม่ครั้งแรกหลัง OTA ต้อง mark valid ภายใน N seconds ไม่งั้น rollback
-- **HTTPS cert pinning** — ใช้ root cert ของ Let's Encrypt (Supabase ใช้)
-- **Supabase rate limit** — free tier มี limit, ต้อง batch + throttle
+- **Service UUID**: `12345678-1234-5678-1234-56789abcdef0`
+- **Frame characteristic**: `...def1` (notify — raw CAN/UDS frames)
+- **Control characteristic**: `...def2` (write — commands to firmware)
+- **Data format**: Raw BLE hex packets, UDS response (0x62 = ReadDataByIdentifier response)
 
 ---
 
-## 🔧 Useful Commands
+## NVS Modes
 
-### Development
+Firmware switches behavior via NVS `mode` key:
+- **DEV**: WiFi enabled, HTTP debug server at `http://esp32-obd2.local`
+  - `/api/frames` — live CAN frames + TWAI status
+  - `/api/scan?range=xx&go=1` — DID brute-force scanner
+  - `/log` — CAN log viewer with live JS polling
+- **PROD**: BLE only, WiFi off, optimized for app connection
+
+---
+
+## Useful Commands
+
+### Firmware
 ```bash
+# Setup ESP-IDF environment
+export IDF_PATH=$HOME/esp/esp-idf
+. $IDF_PATH/export.sh
+
 # Build
-cargo build --release
+cd poc-can-sniffer && idf.py build
 
 # Flash + monitor
-cargo run --release
+idf.py -p /dev/cu.usbserial-10 flash monitor
 
 # Monitor only
-espflash monitor
-
-# Flash specific binary
-espflash flash --monitor target/xtensa-esp32s3-espidf/release/firmware
+idf.py -p /dev/cu.usbserial-10 monitor
 
 # Erase flash (factory reset)
-espflash erase-flash
+idf.py -p /dev/cu.usbserial-10 erase-flash
 
-# Read flash size
-espflash board-info
+# OTA via HTTP (when WiFi mode)
+idf.py -p /dev/cu.usbserial-10 ota --port 8070
+```
+
+### Flutter App
+```bash
+cd app
+flutter pub get
+flutter run                    # Debug
+flutter build apk --release    # Release APK
+```
+
+### Cloudflare Worker
+```bash
+cd cloud
+bun install
+bun run dev                    # Local dev
+bun run deploy                 # Deploy to Cloudflare
+bun run db:migrate             # Apply schema to D1
 ```
 
 ### Debugging
 ```bash
-# Find device
-ls /dev/cu.usbmodem*    # Native USB
-ls /dev/cu.usbserial*   # UART bridge
+# Find USB device
+find /dev -name "cu.usb*" -maxdepth 1
 
-# Manual reset to bootloader (if auto fails)
+# Manual reset to bootloader
 # Hold BOOT, press RESET, release BOOT
-
-# Decode panic backtrace
-espflash decode --target xtensa-esp32s3-espidf
-```
-
-### CAN Testing (Linux/Mac with USB-CAN adapter)
-```bash
-# Setup virtual CAN for testing
-sudo ip link add dev vcan0 type vcan
-sudo ip link set up vcan0
-
-# Send test frame
-cansend vcan0 123#DEADBEEF
-
-# Monitor
-candump vcan0
-
-# Replay capture
-canplayer -I capture.log
 ```
 
 ---
 
-## 📚 References
+## Critical Constraints
 
-### Official Docs
-- ESP32-S3 Datasheet: https://www.espressif.com/sites/default/files/documentation/esp32-s3_datasheet_en.pdf
-- ESP-IDF Programming Guide: https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/
-- esp-rs Book: https://esp-rs.github.io/book/
-- esp-idf-hal docs: https://docs.esp-rs.org/esp-idf-hal/
+### CAN
+- **READ-ONLY** — only UDS ReadDataByIdentifier (0x22), no write commands
+- **Bus-off recovery** — TWAI errata fixes enabled, auto-recover
+- **Bitrate**: 500 kbps only — other rates confirmed not working (250k → bus errors)
 
-### Honda ADV350
-- Service Manual (need to obtain — for OBD pinout confirmation)
-- Honda HISS / Smart Key info: skip in v1, read-only doesn't need bypass
+### Power
+- **Brownout on bench** — BLE init draws ~240mA peak, FT232 3V3 can't supply
+- **Fix**: `CONFIG_ESP_BROWNOUT_DET=n` for bench, vehicle 12V has no issue
+- **Battery drain** — deep sleep or relay cutoff needed for parking
 
-### CAN Reverse Engineering
-- SavvyCAN: https://www.savvycan.com/
-- python-can: https://python-can.readthedocs.io/
-- HondaECU project: https://github.com/RyanHope/HondaECU (K-Line reference)
+### Data
+- **ALWAYS store raw_ble_hex** — past data loss from discarding raw bytes (3,580 rows lost)
+- **NVS write ~100K cycles** — don't write frequently
+- **OTA rollback** — mark valid within N seconds after first boot, else auto-rollback
 
-### Supabase Integration
-- REST API: https://supabase.com/docs/reference/api
-- Realtime: https://supabase.com/docs/guides/realtime
-
----
-
-## 🔒 Security Notes
-
-- **Service role key** เก็บใน NVS encrypted partition (ไม่ใช่ commit ใน git)
-- **Device authentication** — ใช้ device-specific JWT หรือ API key
-- **OTA binary signing** — ใช้ secure boot + signed app images (production)
-- **BLE pairing** — ใช้ LE Secure Connections + bonding (ไม่ใช่ Just Works)
+### BLE
+- **Connection drops after ~30s** in PROD mode — under investigation
+- **Single connection only** — NimBLE configured for 1 peripheral connection
 
 ---
 
-## 🎯 Definition of Done (v1.0)
+## Security
 
-- [ ] อ่าน RPM, vehicle speed, throttle position, coolant temp ได้แม่นยำ
-- [ ] Stream ข้อมูลขึ้น Supabase แบบ real-time (latency < 5 sec)
-- [ ] Buffer ข้อมูลตอน offline แล้ว flush เมื่อกลับ online
-- [ ] OTA update ทำงานได้ end-to-end
-- [ ] รัน 7 วันต่อเนื่องบนรถจริงไม่ crash
-- [ ] Dashboard แสดงข้อมูล trip ย้อนหลังได้
-- [ ] BLE pair กับ mobile app และ control basic ได้
+- **WiFi creds** stored in NVS (not in git) — via sdkconfig.local or NVS write
+- **Cloudflare API key** — Worker secret, not in wrangler.jsonc
+- **BLE pairing** — LE Secure Connections + bonding (production target)
+- **OTA signing** — secure boot + signed images (production target)
 
 ---
 
-*Last updated: 2026-05-07*
-*Maintainer: MEGALODON*
+## Definition of Done (v1.0)
+
+- [x] Read RPM, speed, throttle, coolant temp via UDS (14 DIDs confirmed)
+- [ ] Record real driving data with decoded values + raw_ble_hex
+- [ ] Cloud sync to Cloudflare D1 (batch upload from app)
+- [ ] OTA update working end-to-end
+- [ ] Run 7 days continuous on bike without crash
+- [ ] App redesign: 4-tab layout (Ride/Trip/Vehicle/Dev)
+- [ ] BLE stable connection (fix 30s dropout)
+
+---
+
+*Last updated: 2026-05-19*
