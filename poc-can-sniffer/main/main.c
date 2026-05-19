@@ -22,6 +22,8 @@
 #include "services/gatt/ble_svc_gatt.h"
 #include "host/ble_store.h"
 #include "host/ble_gatt.h"
+#include "obd2.h"
+#include "metrics.h"
 
 static const char *TAG = "ADV350";
 
@@ -37,6 +39,25 @@ typedef enum { MODE_DEV, MODE_PROD } app_mode_t;
 
 static app_mode_t current_mode;
 static volatile bool ota_in_progress = false;
+
+// ── CAN Frame Ring Buffer (for WiFi log viewer) ──
+
+#define LOG_RING_SIZE 100
+
+typedef struct {
+    uint32_t id;
+    uint8_t dlc;
+    uint8_t data[8];
+    int64_t timestamp_ms;
+    uint32_t seq;
+} log_frame_t;
+
+static log_frame_t s_log_ring[LOG_RING_SIZE];
+static volatile int s_log_head = 0;
+static volatile int s_log_count = 0;
+static volatile uint32_t s_log_seq = 0;
+static volatile uint64_t s_total_frames = 0;
+static volatile uint64_t s_total_fps = 0;
 
 // ── Mode Detection ──
 
@@ -291,7 +312,7 @@ static void can_sniffer_task(void *arg)
     }
     twai_start();
 
-    ESP_LOGI(TAG, "CAN sniffer started: 500kbps, ListenOnly, GPIO26/27");
+    ESP_LOGI(TAG, "CAN sniffer started: 500kbps, Normal, GPIO26/27");
 
     uint64_t frame_count = 0;
     int64_t start_us = esp_timer_get_time();
@@ -317,12 +338,25 @@ static void can_sniffer_task(void *arg)
             printf("\n");
 
             ble_notify_can_frame(&msg);
+            obd2_process_frame(&msg);
+
+            // Push to ring buffer for WiFi log viewer
+            log_frame_t *lf = &s_log_ring[s_log_head];
+            lf->id = msg.identifier;
+            lf->dlc = msg.data_length_code;
+            memcpy(lf->data, msg.data, msg.data_length_code);
+            lf->timestamp_ms = elapsed_ms;
+            lf->seq = ++s_log_seq;
+            s_log_head = (s_log_head + 1) % LOG_RING_SIZE;
+            if (s_log_count < LOG_RING_SIZE) s_log_count++;
         }
 
         int64_t now = esp_timer_get_time();
         if ((now - last_stats_us) >= 10000000) {
             int64_t elapsed_s = (now - start_us) / 1000000;
             uint64_t fps = elapsed_s > 0 ? frame_count / elapsed_s : 0;
+            s_total_frames = frame_count;
+            s_total_fps = fps;
             ESP_LOGI(TAG, "--- STATS: %llu frames in %llds (%llu fps) ---",
                      frame_count, elapsed_s, fps);
             last_stats_us = now;
@@ -332,9 +366,106 @@ static void can_sniffer_task(void *arg)
 
 // ── DEV Mode (WiFi + OTA + CAN) ──
 
+// ── WiFi CAN Log Viewer ──
+
+static const char log_html[] =
+    "<!DOCTYPE html><html><head>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<style>"
+    "body{background:#111;color:#eee;font-family:monospace;margin:0;padding:8px}"
+    "h1{font-size:16px;color:#4fc3f7;margin:4px 0}"
+    "table{width:100%;border-collapse:collapse;font-size:12px}"
+    "th{background:#222;color:#888;text-align:left;padding:4px;position:sticky;top:0}"
+    "td{padding:2px 4px;border-bottom:1px solid #222}"
+    ".i{color:#ffa726}.d{color:#66bb6a}.s{color:#888;font-size:11px;margin:4px 0}"
+    "a{color:#4fc3f7}"
+    "</style></head><body>"
+    "<h1>ADV350 CAN Log</h1>"
+    "<div class='s' id='st'>Connecting...</div>"
+    "<table><thead><tr><th>ms</th><th>ID</th><th>DLC</th><th>DATA</th></tr></thead>"
+    "<tbody id='tb'></tbody></table>"
+    "<script>"
+    "let sq=0;"
+    "async function p(){"
+    "try{"
+    "const r=await fetch('/api/frames?since='+sq);"
+    "const j=await r.json();"
+    "if(j.f.length>0){"
+    "const t=document.getElementById('tb');"
+    "j.f.forEach(f=>{"
+    "const r=document.createElement('tr');"
+    "r.innerHTML='<td>'+f.t+'</td><td class=i>0x'+f.i.toString(16).toUpperCase().padStart(3,'0')+'</td><td>'+f.d+'</td><td class=d>'+f.b+'</td>';"
+    "t.appendChild(r);"
+    "sq=Math.max(sq,f.s);"
+    "});"
+    "while(t.rows.length>300)t.deleteRow(0);"
+    "window.scrollTo(0,document.body.scrollHeight);"
+    "}"
+    "document.getElementById('st').textContent="
+    "'Frames: '+j.n+' | FPS: '+j.p+' | Heap: '+j.h+' | Ring: '+j.f.length;"
+    "}catch(e){document.getElementById('st').textContent='Error: '+e;}"
+    "}"
+    "setInterval(p,200);"
+    "</script></body></html>";
+
+static esp_err_t log_page_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, log_html, strlen(log_html));
+}
+
+static esp_err_t api_frames_handler(httpd_req_t *req)
+{
+    uint32_t since = 0;
+    char query[32] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char val[16];
+        if (httpd_query_key_value(query, "since", val, sizeof(val)) == ESP_OK) {
+            since = (uint32_t)atoi(val);
+        }
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+    char buf[64];
+    int len = snprintf(buf, sizeof(buf),
+        "{\"n\":%llu,\"p\":%llu,\"h\":%lu,\"f\":[",
+        s_total_frames, s_total_fps, (unsigned long)esp_get_free_heap_size());
+    httpd_resp_send_chunk(req, buf, len);
+
+    int start = (s_log_count < LOG_RING_SIZE) ? 0 : s_log_head;
+    int count = s_log_count;
+    bool first = true;
+
+    for (int i = 0; i < count; i++) {
+        int idx = (start + i) % LOG_RING_SIZE;
+        log_frame_t *f = &s_log_ring[idx];
+        if (f->seq <= since) continue;
+
+        char hex[32] = {0};
+        int hpos = 0;
+        for (int b = 0; b < f->dlc && b < 8; b++) {
+            hpos += snprintf(hex + hpos, sizeof(hex) - hpos, "%s%02X", b ? " " : "", f->data[b]);
+        }
+
+        len = snprintf(buf, sizeof(buf), "%s{\"t\":%lld,\"i\":%lu,\"d\":%d,\"b\":\"%s\",\"s\":%lu}",
+            first ? "" : ",",
+            f->timestamp_ms, (unsigned long)f->id, f->dlc, hex, (unsigned long)f->seq);
+        httpd_resp_send_chunk(req, buf, len);
+        first = false;
+    }
+
+    httpd_resp_send_chunk(req, "]}", 2);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
 static void start_dev_mode(void)
 {
-    ESP_LOGI(TAG, "=== DEV MODE (WiFi + OTA + CAN) ===");
+    ESP_LOGI(TAG, "=== DEV MODE (WiFi + OTA + CAN + OBD2 + Metrics) ===");
+    obd2_init();
+    metrics_init();
 
     ESP_LOGI(TAG, "Connecting to WiFi '%s'...", WIFI_SSID);
     wifi_init_sta();
@@ -351,15 +482,20 @@ static void start_dev_mode(void)
 
         httpd_config_t config = HTTPD_DEFAULT_CONFIG();
         config.recv_wait_timeout = 30;
-        config.max_uri_handlers = 4;
+        config.max_uri_handlers = 8;
 
         httpd_handle_t server = NULL;
         if (httpd_start(&server, &config) == ESP_OK) {
             httpd_uri_t page = { .uri = "/", .method = HTTP_GET, .handler = ota_page_handler };
             httpd_uri_t update = { .uri = "/update", .method = HTTP_POST, .handler = ota_update_handler };
+            httpd_uri_t logpage = { .uri = "/log", .method = HTTP_GET, .handler = log_page_handler };
+            httpd_uri_t apiframes = { .uri = "/api/frames", .method = HTTP_GET, .handler = api_frames_handler };
             httpd_register_uri_handler(server, &page);
             httpd_register_uri_handler(server, &update);
-            ESP_LOGI(TAG, "OTA web server running at http://" IPSTR, IP2STR(&wifi_ip));
+            httpd_register_uri_handler(server, &logpage);
+            httpd_register_uri_handler(server, &apiframes);
+            ESP_LOGI(TAG, "OTA: http://" IPSTR, IP2STR(&wifi_ip));
+            ESP_LOGI(TAG, "CAN Log: http://" IPSTR "/log", IP2STR(&wifi_ip));
         }
     } else {
         ESP_LOGW(TAG, "WiFi not connected - OTA unavailable");
@@ -388,9 +524,27 @@ static const ble_uuid128_t can_ctrl_chr_uuid =
     BLE_UUID128_INIT(0xf2, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12,
                      0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
 
+static const ble_uuid128_t vehicle_data_chr_uuid =
+    BLE_UUID128_INIT(0xf3, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12,
+                     0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
+
+static const ble_uuid128_t metrics_chr_uuid =
+    BLE_UUID128_INIT(0xf4, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12,
+                     0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
+
+static const ble_uuid128_t dtc_chr_uuid =
+    BLE_UUID128_INIT(0xf5, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12,
+                     0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
+
 static uint16_t can_frame_chr_handle;
+static uint16_t vehicle_data_chr_handle;
+static uint16_t metrics_chr_handle;
+static uint16_t dtc_chr_handle;
 static volatile bool ble_live_notify = false;
+static volatile bool ble_data_notify = false;
+static volatile bool obd2_polling_active = false;
 static volatile uint8_t pending_led_blink = 0;
+static TaskHandle_t obd2_poll_task_handle = NULL;
 
 static int can_frame_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                 struct ble_gatt_access_ctxt *ctxt, void *arg)
@@ -402,22 +556,135 @@ static int can_frame_chr_access(uint16_t conn_handle, uint16_t attr_handle,
     return 0;
 }
 
+// Vehicle data BLE packet: [flags:2][rpm:2][speed:1][coolant:1][throttle:1][map:1][iat:1][batt:2][fuel_rate:2][cvt:2][score:1]
+static int vehicle_data_chr_access(uint16_t conn_handle, uint16_t attr_handle,
+                                   struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    if (ctxt->op != BLE_GATT_ACCESS_OP_READ_CHR) return 0;
+
+    uint8_t buf[16] = {0};
+    uint16_t flags = 0;
+    float v;
+
+    v = vd_rpm(&g_vehicle);
+    if (v >= 0) { flags |= (1 << 0); uint16_t r = (uint16_t)v; memcpy(&buf[2], &r, 2); }
+    v = vd_speed(&g_vehicle);
+    if (v >= 0) { flags |= (1 << 1); buf[4] = (uint8_t)v; }
+    v = vd_coolant(&g_vehicle);
+    if (v > -100) { flags |= (1 << 2); buf[5] = (uint8_t)(v + 40); }
+    v = vd_throttle(&g_vehicle);
+    if (v >= 0) { flags |= (1 << 3); buf[6] = (uint8_t)(v * 2.55f); }
+    v = vd_map(&g_vehicle);
+    if (v >= 0) { flags |= (1 << 4); buf[7] = (uint8_t)v; }
+    v = vd_iat(&g_vehicle);
+    if (v > -100) { flags |= (1 << 5); buf[8] = (uint8_t)(v + 40); }
+    if (sensor_fresh(&g_vehicle.battery_v)) {
+        flags |= (1 << 6);
+        uint16_t bv = (uint16_t)(g_vehicle.battery_v.value * 100);
+        memcpy(&buf[9], &bv, 2);
+    }
+    if (g_metrics.valid) {
+        flags |= (1 << 7);
+        uint16_t fr = (uint16_t)(g_metrics.fuel_rate_lph * 100);
+        memcpy(&buf[11], &fr, 2);
+        uint16_t cvt = (uint16_t)(g_metrics.cvt_ratio * 100);
+        memcpy(&buf[13], &cvt, 2);
+        buf[15] = g_metrics.riding_score;
+    }
+    memcpy(buf, &flags, 2);
+    os_mbuf_append(ctxt->om, buf, 16);
+    return 0;
+}
+
+// Metrics BLE packet: [accel:2][gforce:2][fuel_kmpl:2][trip_fuel:2][trip_dist:2][trip_avg:2][power:2][brake_dist:2]
+static int metrics_chr_access(uint16_t conn_handle, uint16_t attr_handle,
+                              struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    if (ctxt->op != BLE_GATT_ACCESS_OP_READ_CHR) return 0;
+
+    int16_t buf[8] = {0};
+    if (g_metrics.valid) {
+        buf[0] = (int16_t)(g_metrics.accel_ms2 * 100);
+        buf[1] = (int16_t)(g_metrics.gforce_x * 1000);
+        buf[2] = (int16_t)(g_metrics.fuel_consumption_kmpl * 10);
+        buf[3] = (int16_t)(g_metrics.trip_fuel_l * 1000);
+        buf[4] = (int16_t)(g_metrics.trip_dist_km * 100);
+        buf[5] = (int16_t)(g_metrics.trip_avg_kmpl * 10);
+        buf[6] = (int16_t)(g_metrics.wheel_power_kw * 100);
+        buf[7] = (int16_t)(g_metrics.braking_dist_m * 10);
+    }
+    os_mbuf_append(ctxt->om, buf, sizeof(buf));
+    return 0;
+}
+
+// DTC characteristic: [count:1][dtc1:5bytes_ascii]...[dtcN:5bytes_ascii]
+static int dtc_chr_access(uint16_t conn_handle, uint16_t attr_handle,
+                          struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    if (ctxt->op != BLE_GATT_ACCESS_OP_READ_CHR) return 0;
+
+    uint8_t count = g_vehicle.dtcs_valid ? g_vehicle.dtc_count : 0xFF;
+    os_mbuf_append(ctxt->om, &count, 1);
+    for (int i = 0; i < g_vehicle.dtc_count && g_vehicle.dtcs_valid; i++) {
+        os_mbuf_append(ctxt->om, g_vehicle.dtcs[i].text, 5);
+    }
+    return 0;
+}
+
+// Control: 0x00=stop notify, 0x01=start notify, 0x02=ping LED,
+//          0x10=start OBD2 poll, 0x11=stop OBD2 poll, 0x12=read DTCs, 0x13=reset trip
 static int can_ctrl_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
     if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
-        uint8_t val = ble_live_notify ? 1 : 0;
-        os_mbuf_append(ctxt->om, &val, sizeof(val));
+        uint8_t status[3] = {
+            ble_live_notify ? 1 : 0,
+            obd2_polling_active ? 1 : 0,
+            g_vehicle.pids_probed ? 1 : 0,
+        };
+        os_mbuf_append(ctxt->om, status, sizeof(status));
     } else if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
         uint8_t val;
-        if (OS_MBUF_PKTLEN(ctxt->om) == 1) {
+        if (OS_MBUF_PKTLEN(ctxt->om) >= 1) {
             os_mbuf_copydata(ctxt->om, 0, 1, &val);
-            if (val == 0x02) {
+            switch (val) {
+            case 0x00:
+                ble_live_notify = false;
+                ble_data_notify = false;
+                ESP_LOGI(TAG, "BLE: all notify OFF");
+                break;
+            case 0x01:
+                ble_live_notify = true;
+                ble_data_notify = true;
+                ESP_LOGI(TAG, "BLE: notify ON");
+                break;
+            case 0x02:
                 pending_led_blink = 3;
-                ESP_LOGI(TAG, "BLE: ping requested");
-            } else {
-                ble_live_notify = (val != 0);
-                ESP_LOGI(TAG, "BLE: CAN live notify %s", ble_live_notify ? "ON" : "OFF");
+                ESP_LOGI(TAG, "BLE: ping LED");
+                break;
+            case 0x10:
+                if (!obd2_polling_active) {
+                    obd2_polling_active = true;
+                    xTaskCreatePinnedToCore(obd2_poll_task, "obd2_poll", 3072, NULL, 4, &obd2_poll_task_handle, 1);
+                    ESP_LOGI(TAG, "BLE: OBD2 polling started");
+                }
+                break;
+            case 0x11:
+                if (obd2_polling_active && obd2_poll_task_handle) {
+                    obd2_polling_active = false;
+                    vTaskDelete(obd2_poll_task_handle);
+                    obd2_poll_task_handle = NULL;
+                    ESP_LOGI(TAG, "BLE: OBD2 polling stopped");
+                }
+                break;
+            case 0x12:
+                obd2_read_dtcs();
+                ESP_LOGI(TAG, "BLE: DTC read requested");
+                break;
+            case 0x13:
+                metrics_reset_trip();
+                ESP_LOGI(TAG, "BLE: trip reset");
+                break;
             }
         }
     }
@@ -439,6 +706,24 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                 .uuid = &can_ctrl_chr_uuid.u,
                 .access_cb = can_ctrl_chr_access,
                 .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+            },
+            {
+                .uuid = &vehicle_data_chr_uuid.u,
+                .access_cb = vehicle_data_chr_access,
+                .val_handle = &vehicle_data_chr_handle,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+            },
+            {
+                .uuid = &metrics_chr_uuid.u,
+                .access_cb = metrics_chr_access,
+                .val_handle = &metrics_chr_handle,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+            },
+            {
+                .uuid = &dtc_chr_uuid.u,
+                .access_cb = dtc_chr_access,
+                .val_handle = &dtc_chr_handle,
+                .flags = BLE_GATT_CHR_F_READ,
             },
             { 0 },
         },
@@ -610,11 +895,52 @@ static void ble_reboot_task(void *arg)
     esp_restart();
 }
 
+// Metrics + vehicle data notification task (10 Hz)
+static void metrics_task(void *arg)
+{
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    ESP_LOGI(TAG, "Metrics task started (10 Hz)");
+
+    while (1) {
+        metrics_update();
+
+        if (ble_conn_handle != BLE_HS_CONN_HANDLE_NONE && ble_data_notify) {
+            // Vehicle data notification (16 bytes)
+            uint8_t vbuf[16] = {0};
+            uint16_t flags = 0;
+            float v;
+            v = vd_rpm(&g_vehicle);
+            if (v >= 0) { flags |= (1 << 0); uint16_t r = (uint16_t)v; memcpy(&vbuf[2], &r, 2); }
+            v = vd_speed(&g_vehicle);
+            if (v >= 0) { flags |= (1 << 1); vbuf[4] = (uint8_t)v; }
+            v = vd_coolant(&g_vehicle);
+            if (v > -100) { flags |= (1 << 2); vbuf[5] = (uint8_t)(v + 40); }
+            v = vd_throttle(&g_vehicle);
+            if (v >= 0) { flags |= (1 << 3); vbuf[6] = (uint8_t)(v * 2.55f); }
+            if (g_metrics.valid) {
+                flags |= (1 << 7);
+                uint16_t fr = (uint16_t)(g_metrics.fuel_rate_lph * 100);
+                memcpy(&vbuf[11], &fr, 2);
+                vbuf[15] = g_metrics.riding_score;
+            }
+            memcpy(vbuf, &flags, 2);
+
+            struct os_mbuf *om = ble_hs_mbuf_from_flat(vbuf, 16);
+            if (om) ble_gatts_notify_custom(ble_conn_handle, vehicle_data_chr_handle, om);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
 // ── PROD Mode (BLE + CAN) ──
 
 static void start_prod_mode(void)
 {
-    ESP_LOGI(TAG, "=== PROD MODE (BLE + CAN) ===");
+    ESP_LOGI(TAG, "=== PROD MODE (BLE + CAN + OBD2 + Metrics) ===");
+
+    obd2_init();
+    metrics_init();
 
     ESP_LOGI(TAG, "Free heap before BLE: %lu", (unsigned long)esp_get_free_heap_size());
     ble_init();
@@ -623,6 +949,7 @@ static void start_prod_mode(void)
 
     xTaskCreatePinnedToCore(can_sniffer_task, "can_sniffer", 4096, NULL, 5, NULL, 1);
     xTaskCreatePinnedToCore(led_task, "led_task", 2048, NULL, 3, NULL, 1);
+    xTaskCreatePinnedToCore(metrics_task, "metrics", 3072, NULL, 4, NULL, 1);
 
     gpio_set_level(LED_GPIO, 1);
     ESP_LOGI(TAG, "LED off (GPIO%d)", LED_GPIO);
