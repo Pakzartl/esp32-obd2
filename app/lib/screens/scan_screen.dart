@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import '../services/ble_service.dart';
 import 'dashboard_screen.dart';
+import 'settings_screen.dart';
 
 class ScanScreen extends StatefulWidget {
   const ScanScreen({super.key});
@@ -67,6 +68,15 @@ class _ScanScreenState extends State<ScanScreen> {
         title: const Text('ADV350 Logger'),
         backgroundColor: Colors.black87,
         foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SettingsScreen()),
+            ),
+          ),
+        ],
       ),
       backgroundColor: Colors.grey[100],
       body: Column(

@@ -14,7 +14,7 @@ class DatabaseService {
     final path = join(await getDatabasesPath(), 'adv350.db');
     return openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE telemetry (
@@ -23,6 +23,8 @@ class DatabaseService {
             speed INTEGER NOT NULL,
             throttle INTEGER NOT NULL,
             coolant_temp INTEGER NOT NULL,
+            raw_gear INTEGER NOT NULL DEFAULT 0,
+            raw_fuel INTEGER NOT NULL DEFAULT 0,
             map_kpa INTEGER NOT NULL DEFAULT 0,
             iat INTEGER NOT NULL DEFAULT 0,
             engine_load INTEGER NOT NULL DEFAULT 0,
@@ -44,6 +46,33 @@ class DatabaseService {
         }
         if (oldVersion < 3) {
           await db.execute("ALTER TABLE telemetry ADD COLUMN raw_ble_hex TEXT NOT NULL DEFAULT ''");
+        }
+        if (oldVersion < 4) {
+          // Recreate table with DEFAULT 0 on raw_gear/raw_fuel (SQLite can't ALTER DEFAULT)
+          await db.execute('''
+            CREATE TABLE telemetry_new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              rpm INTEGER NOT NULL,
+              speed INTEGER NOT NULL,
+              throttle INTEGER NOT NULL,
+              coolant_temp INTEGER NOT NULL,
+              raw_gear INTEGER NOT NULL DEFAULT 0,
+              raw_fuel INTEGER NOT NULL DEFAULT 0,
+              map_kpa INTEGER NOT NULL DEFAULT 0,
+              iat INTEGER NOT NULL DEFAULT 0,
+              engine_load INTEGER NOT NULL DEFAULT 0,
+              ignition_timing INTEGER NOT NULL DEFAULT 0,
+              raw_ble_hex TEXT NOT NULL DEFAULT '',
+              timestamp INTEGER NOT NULL,
+              synced INTEGER NOT NULL DEFAULT 0
+            )
+          ''');
+          await db.execute('''
+            INSERT INTO telemetry_new (id, rpm, speed, throttle, coolant_temp, raw_gear, raw_fuel, map_kpa, iat, engine_load, ignition_timing, raw_ble_hex, timestamp, synced)
+            SELECT id, rpm, speed, throttle, coolant_temp, raw_gear, raw_fuel, map_kpa, iat, engine_load, ignition_timing, raw_ble_hex, timestamp, synced FROM telemetry
+          ''');
+          await db.execute('DROP TABLE telemetry');
+          await db.execute('ALTER TABLE telemetry_new RENAME TO telemetry');
         }
       },
     );

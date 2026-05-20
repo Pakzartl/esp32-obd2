@@ -119,6 +119,8 @@ class Telemetry {
         'speed': speed,
         'throttle': throttle,
         'coolant_temp': coolantTemp,
+        'raw_gear': 0,
+        'raw_fuel': 0,
         'map_kpa': mapKpa,
         'iat': iat,
         'engine_load': engineLoad,

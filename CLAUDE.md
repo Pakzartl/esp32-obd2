@@ -130,29 +130,33 @@ F = +12V (battery, switched by ignition)
 - **Request**: `0x18DA10F1` (Tester F1 → ECU 10)
 - **Response**: `0x18DAF110` (ECU 10 → Tester F1)
 - **UDS ReadDataByIdentifier** (SID 0x22) with DIDs in 0xF4xx range
-- **500 kbps**, ISO-TP single frame
+- **500 kbps**, ISO-TP single frame + multi-frame
 - **ECU never broadcasts** — must poll
 
-### Confirmed DIDs (14)
+### Confirmed DIDs — Single Frame (7)
 
-| DID | Sensor | Formula | Unit |
-|-----|--------|---------|------|
-| 0xF40C | RPM | (A*256+B)/4 | rpm |
-| 0xF40D | Vehicle Speed | A | km/h |
-| 0xF411 | Throttle Position | A*100/255 | % |
-| 0xF405 | Coolant Temp | A-40 | °C |
-| 0xF40B | MAP | A | kPa |
-| 0xF40F | IAT | A-40 | °C |
-| 0xF404 | Engine Load | A*100/255 | % |
-| 0xF40E | Ignition Timing | A/2-64 | ° |
-| 0xF406 | Short Fuel Trim | (A-128)*100/128 | % |
-| 0xF407 | Long Fuel Trim | (A-128)*100/128 | % |
-| 0xF41C | OBD Compliance | A | enum |
-| 0xF403 | Fuel System | A | enum |
-| 0xF401 | Monitor Status | A | bitmask |
-| 0xF402 | Freeze DTC | A*256+B | code |
+| DID | Sensor | Formula | Unit | Verified |
+|-----|--------|---------|------|----------|
+| 0xF40C | RPM | (A*256+B)/4 | rpm | 2026-05-20 |
+| 0xF40D | Vehicle Speed | A | km/h | 2026-05-20 |
+| 0xF411 | Throttle Position | A*100/255 | % | 2026-05-20 |
+| 0xF405 | Coolant Temp | A-40 | °C | 2026-05-20 |
+| 0xF40B | MAP | A | kPa | 2026-05-20 |
+| 0xF40F | IAT | A-40 | °C | 2026-05-20 |
+| 0xF404 | Engine Load | A*100/255 | % | 2026-05-20 |
 
-**Not available**: Battery voltage, fuel rate (proprietary ranges scanned, empty)
+### Confirmed DIDs — Multi-frame ISO-TP (2)
+
+| DID | Sensor | Response Size | Verified |
+|-----|--------|---------------|----------|
+| 0x0100 | Monitor Status (MIL + DTC count) | 59 bytes | 2026-05-20 |
+| 0x0124 | Lambda (O2 sensor) | multi-frame | 2026-05-20 |
+
+### Not Available (NRC 0x31 — requestOutOfRange)
+
+0xF40E (Ignition Timing), 0xF406 (Short Fuel Trim), 0xF407 (Long Fuel Trim),
+0xF41C (OBD Compliance), 0xF403 (Fuel System), 0xF402 (Freeze DTC),
+0xF442 (Battery Voltage), 0xF45E (Fuel Rate)
 
 ---
 

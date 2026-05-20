@@ -3,12 +3,14 @@ import 'package:flutter/material.dart';
 import '../models/telemetry.dart';
 import '../services/ble_service.dart';
 import '../services/database_service.dart';
+import '../services/raw_backup_service.dart';
 import '../widgets/gauge_card.dart';
 import 'scan_screen.dart';
 import 'history_screen.dart';
 import 'raw_log_screen.dart';
 import 'metrics_screen.dart';
 import 'ota_screen.dart';
+import 'settings_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final BleService bleService;
@@ -21,21 +23,40 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   final _db = DatabaseService();
+  final _rawBackup = RawBackupService();
   Telemetry _current = Telemetry.empty();
   bool _connected = true;
+  bool _skipBle = false;
   int _savedCount = 0;
+  int _rawCount = 0;
   int _tabIndex = 0;
   StreamSubscription? _telemetrySub;
+  StreamSubscription? _rawSub;
   StreamSubscription? _connectionSub;
   DateTime? _lastSave;
 
   @override
   void initState() {
     super.initState();
+    _initBackupAndStart();
+  }
+
+  Future<void> _initBackupAndStart() async {
+    _skipBle = await SettingsScreen.isSkipBle();
+    if (_skipBle) {
+      setState(() => _connected = false);
+      return;
+    }
+    await _rawBackup.startSession();
     widget.bleService.startLiveNotify();
+
+    _rawSub = widget.bleService.rawDataStream.listen((data) {
+      _rawBackup.writeRaw(data);
+      setState(() => _rawCount = _rawBackup.count);
+    });
+
     _telemetrySub = widget.bleService.telemetryStream.listen((t) {
       setState(() => _current = t);
-      // Auto-save at 1 Hz
       final now = DateTime.now();
       if (_lastSave == null || now.difference(_lastSave!).inMilliseconds >= 1000) {
         if (t.rpm > 0 || t.speed > 0 || t.coolantTemp > 0) {
@@ -58,7 +79,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void dispose() {
     _telemetrySub?.cancel();
+    _rawSub?.cancel();
     _connectionSub?.cancel();
+    _rawBackup.endSession();
     super.dispose();
   }
 
@@ -191,6 +214,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
           IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SettingsScreen()),
+            ),
+          ),
+          IconButton(
             icon: const Icon(Icons.bluetooth_disabled),
             onPressed: () async {
               await widget.bleService.clearLastDevice();
@@ -210,30 +240,38 @@ class _DashboardScreenState extends State<DashboardScreen> {
         children: [
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            color: _connected ? Colors.green[800] : Colors.red[800],
+            color: _skipBle ? Colors.orange[800] : _connected ? Colors.green[800] : Colors.red[800],
             child: Row(
               children: [
                 Icon(
-                  _connected ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
+                  _skipBle ? Icons.bug_report : _connected ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
                   color: Colors.white,
                   size: 16,
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  _connected ? 'Connected' : 'Disconnected',
+                  _skipBle ? 'Debugging — BLE skipped' : _connected ? 'Connected' : 'Disconnected',
                   style: const TextStyle(color: Colors.white, fontSize: 13),
                 ),
                 const Spacer(),
-                if (_savedCount > 0)
+                if (_rawCount > 0)
                   Row(
                     children: [
-                      const Icon(Icons.save, color: Colors.white38, size: 14),
+                      const Icon(Icons.fiber_manual_record, color: Colors.redAccent, size: 10),
                       const SizedBox(width: 4),
                       Text(
-                        '$_savedCount saved',
-                        style: const TextStyle(color: Colors.white38, fontSize: 12),
+                        '$_rawCount raw',
+                        style: const TextStyle(color: Colors.redAccent, fontSize: 12),
                       ),
                     ],
+                  ),
+                if (_savedCount > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 8),
+                    child: Text(
+                      '$_savedCount db',
+                      style: const TextStyle(color: Colors.white38, fontSize: 12),
+                    ),
                   ),
               ],
             ),

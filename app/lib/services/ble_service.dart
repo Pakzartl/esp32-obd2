@@ -24,11 +24,13 @@ class BleService {
   StreamSubscription? _connStateSub;
   bool _autoReconnect = true;
   final _telemetryController = StreamController<Telemetry>.broadcast();
+  final _rawDataController = StreamController<List<int>>.broadcast();
   final _connectionController = StreamController<bool>.broadcast();
 
   static const String _lastDeviceKey = 'last_ble_device_id';
 
   Stream<Telemetry> get telemetryStream => _telemetryController.stream;
+  Stream<List<int>> get rawDataStream => _rawDataController.stream;
   Stream<bool> get connectionStream => _connectionController.stream;
   bool get isConnected => _device != null;
 
@@ -102,6 +104,7 @@ class BleService {
             await char.setNotifyValue(true);
             _subscription = char.lastValueStream.listen((data) {
               if (data.isNotEmpty) {
+                _rawDataController.add(data);
                 final telemetry = Telemetry.fromBleData(data);
                 _telemetryController.add(telemetry);
               }
@@ -223,6 +226,7 @@ class BleService {
     _connStateSub?.cancel();
     _subscription?.cancel();
     _telemetryController.close();
+    _rawDataController.close();
     _connectionController.close();
   }
 }

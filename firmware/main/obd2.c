@@ -8,6 +8,7 @@
 static const char *TAG = "UDS";
 
 vehicle_data_t g_vehicle = {0};
+static isotp_rx_t g_isotp = {0};
 
 // ── UDS Request (29-bit extended CAN) ──
 
@@ -151,9 +152,23 @@ static void parse_read_data_response(const uint8_t *data, uint8_t len)
         break;
 
     case DID_LAMBDA:
-        if (vlen >= 2) {
+        if (vlen >= 4) {
+            // Wide-band O2: bytes 0-1 = equivalence ratio, bytes 2-3 = voltage
             float lambda = ((float)val[0] * 256.0f + val[1]) / 32768.0f;
             sensor_set(&g_vehicle.lambda, lambda);
+            ESP_LOGD(TAG, "Lambda: %.3f", lambda);
+        } else if (vlen >= 2) {
+            float lambda = ((float)val[0] * 256.0f + val[1]) / 32768.0f;
+            sensor_set(&g_vehicle.lambda, lambda);
+        }
+        break;
+
+    case DID_MONITOR_STATUS:
+        if (vlen >= 4) {
+            // byte 0: MIL + DTC count (bit7 = MIL, bits 6-0 = count)
+            bool mil_on = (val[0] & 0x80) != 0;
+            uint8_t dtc_count = val[0] & 0x7F;
+            ESP_LOGI(TAG, "Monitor: MIL=%s, DTCs=%d", mil_on ? "ON" : "OFF", dtc_count);
         }
         break;
 
@@ -217,32 +232,105 @@ static void parse_negative_response(const uint8_t *data, uint8_t len)
     ESP_LOGW(TAG, "NRC: service=0x%02X error=0x%02X (%s)", data[1], data[2], name);
 }
 
+// ── ISO-TP Multi-frame ──
+
+static void isotp_send_flow_control(void)
+{
+    twai_message_t fc = {
+        .identifier = HONDA_UDS_REQUEST_ID,
+        .extd = 1,
+        .data_length_code = 8,
+    };
+    fc.data[0] = 0x30; // FC: ContinueToSend
+    fc.data[1] = 0x00; // BlockSize: no limit
+    fc.data[2] = 0x0A; // STmin: 10ms
+    memset(&fc.data[3], 0xCC, 5);
+    twai_transmit(&fc, pdMS_TO_TICKS(100));
+}
+
+static void isotp_handle_first_frame(const twai_message_t *msg)
+{
+    uint16_t total_len = ((uint16_t)(msg->data[0] & 0x0F) << 8) | msg->data[1];
+    if (total_len > ISOTP_MAX_LEN) {
+        ESP_LOGW(TAG, "ISO-TP too large: %d bytes", total_len);
+        return;
+    }
+
+    g_isotp.expected_len = total_len;
+    g_isotp.received_len = 6;
+    memcpy(g_isotp.buf, &msg->data[2], 6);
+    g_isotp.next_seq = 1;
+    g_isotp.active = true;
+
+    isotp_send_flow_control();
+    ESP_LOGD(TAG, "ISO-TP FF: expecting %d bytes", total_len);
+}
+
+static void isotp_handle_consecutive_frame(const twai_message_t *msg)
+{
+    if (!g_isotp.active) return;
+
+    uint8_t seq = msg->data[0] & 0x0F;
+    if (seq != g_isotp.next_seq) {
+        ESP_LOGW(TAG, "ISO-TP seq mismatch: got %d expected %d", seq, g_isotp.next_seq);
+        g_isotp.active = false;
+        return;
+    }
+
+    uint16_t remaining = g_isotp.expected_len - g_isotp.received_len;
+    uint8_t copy_len = remaining < 7 ? remaining : 7;
+    memcpy(&g_isotp.buf[g_isotp.received_len], &msg->data[1], copy_len);
+    g_isotp.received_len += copy_len;
+    g_isotp.next_seq = (g_isotp.next_seq + 1) & 0x0F;
+
+    if (g_isotp.received_len >= g_isotp.expected_len) {
+        g_isotp.active = false;
+        ESP_LOGD(TAG, "ISO-TP complete: %d bytes", g_isotp.received_len);
+
+        uint8_t sid = g_isotp.buf[0];
+        if (sid == (UDS_READ_DATA_BY_ID + UDS_POSITIVE_OFFSET)) {
+            parse_read_data_response(g_isotp.buf, g_isotp.received_len);
+        } else if (sid == (UDS_READ_DTC + UDS_POSITIVE_OFFSET)) {
+            parse_dtc_response(g_isotp.buf, g_isotp.received_len);
+        }
+    }
+}
+
 // ── Frame Router ──
 
 void obd2_process_frame(const twai_message_t *msg)
 {
     // Honda UDS response (29-bit extended)
     if (msg->extd && msg->identifier == HONDA_UDS_RESPONSE_ID) {
-        uint8_t pci = msg->data[0];
-        uint8_t sf_len = pci & 0x0F; // single frame length
-        if ((pci & 0xF0) != 0x00) return; // only handle single frames for now
-        if (sf_len < 1 || sf_len > 7) return;
+        uint8_t pci_type = (msg->data[0] >> 4) & 0x0F;
 
-        uint8_t sid = msg->data[1];
+        if (pci_type == 0) {
+            // Single Frame
+            uint8_t sf_len = msg->data[0] & 0x0F;
+            if (sf_len < 1 || sf_len > 7) return;
 
-        if (sid == (UDS_READ_DATA_BY_ID + UDS_POSITIVE_OFFSET)) {
-            parse_read_data_response(&msg->data[1], sf_len);
-        } else if (sid == (UDS_READ_DTC + UDS_POSITIVE_OFFSET)) {
-            parse_dtc_response(&msg->data[1], sf_len);
-        } else if (sid == (UDS_DIAG_SESSION + UDS_POSITIVE_OFFSET)) {
-            g_vehicle.session_active = true;
-            ESP_LOGI(TAG, "Diagnostic session active");
-        } else if (sid == 0x7F) {
-            parse_negative_response(&msg->data[1], sf_len);
-        } else if (sid == (UDS_TESTER_PRESENT + UDS_POSITIVE_OFFSET)) {
-            // keep-alive ACK, ignore
-        } else {
-            ESP_LOGI(TAG, "UDS response SID=0x%02X len=%d", sid, sf_len);
+            uint8_t sid = msg->data[1];
+
+            if (sid == (UDS_READ_DATA_BY_ID + UDS_POSITIVE_OFFSET)) {
+                parse_read_data_response(&msg->data[1], sf_len);
+            } else if (sid == (UDS_READ_DTC + UDS_POSITIVE_OFFSET)) {
+                parse_dtc_response(&msg->data[1], sf_len);
+            } else if (sid == (UDS_DIAG_SESSION + UDS_POSITIVE_OFFSET)) {
+                g_vehicle.session_active = true;
+                ESP_LOGI(TAG, "Diagnostic session active");
+            } else if (sid == 0x7F) {
+                parse_negative_response(&msg->data[1], sf_len);
+            } else if (sid == (UDS_TESTER_PRESENT + UDS_POSITIVE_OFFSET)) {
+                // keep-alive ACK
+            } else {
+                ESP_LOGI(TAG, "UDS response SID=0x%02X len=%d", sid, sf_len);
+            }
+        } else if (pci_type == 1) {
+            // First Frame
+            isotp_handle_first_frame(msg);
+        } else if (pci_type == 2) {
+            // Consecutive Frame
+            isotp_handle_consecutive_frame(msg);
         }
     }
 }
@@ -286,7 +374,7 @@ void obd2_probe_dids(void)
 static const uint16_t poll_dids[] = {
     DID_RPM, DID_SPEED, DID_THROTTLE, DID_COOLANT_TEMP,
     DID_ENGINE_LOAD, DID_MAP_KPA, DID_INTAKE_AIR_TEMP,
-    DID_BATTERY_VOLTAGE, DID_FUEL_RATE,
+    DID_LAMBDA, DID_MONITOR_STATUS,
 };
 #define POLL_DID_COUNT (sizeof(poll_dids) / sizeof(poll_dids[0]))
 

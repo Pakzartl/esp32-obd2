@@ -1,10 +1,15 @@
 import 'package:flutter/material.dart';
 import 'screens/scan_screen.dart';
 import 'screens/dashboard_screen.dart';
+import 'screens/settings_screen.dart';
 import 'services/ble_service.dart';
+import 'services/debug_server.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (await SettingsScreen.isDevMode()) {
+    DebugServer().start();
+  }
   runApp(const Adv350App());
 }
 
@@ -45,6 +50,10 @@ class _StartupScreenState extends State<StartupScreen> {
   }
 
   Future<void> _init() async {
+    if (await SettingsScreen.isSkipBle()) {
+      _goDemo();
+      return;
+    }
     final lastId = await _bleService.lastDeviceId;
     if (lastId == null) {
       _goScan();
