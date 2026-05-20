@@ -1,5 +1,7 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../services/debug_server.dart';
 import '../services/raw_backup_service.dart';
 
@@ -29,6 +31,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _debugServer = DebugServer();
   final _rawBackup = RawBackupService();
   List<Map<String, dynamic>> _backupFiles = [];
+  bool _scanning = false;
+  String? _boardIp;
+  String _scanStatus = '';
 
   @override
   void initState() {
@@ -70,6 +75,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(SettingsScreen.skipBleKey, value);
     setState(() => _skipBle = value);
+  }
+
+  Future<void> _scanForBoard() async {
+    setState(() {
+      _scanning = true;
+      _boardIp = null;
+      _scanStatus = 'Getting network info...';
+    });
+
+    try {
+      final interfaces = await NetworkInterface.list(type: InternetAddressType.IPv4);
+      final wlan = interfaces.where((i) => i.name.contains('wlan') || i.name.contains('en')).toList();
+      if (wlan.isEmpty || wlan.first.addresses.isEmpty) {
+        setState(() { _scanning = false; _scanStatus = 'No WiFi connection'; });
+        return;
+      }
+
+      final myIp = wlan.first.addresses.first.address;
+      final subnet = myIp.substring(0, myIp.lastIndexOf('.'));
+      setState(() => _scanStatus = 'Scanning $subnet.* ...');
+
+      final futures = <Future>[];
+      for (int i = 1; i < 255; i++) {
+        final ip = '$subnet.$i';
+        futures.add(_probeBoard(ip));
+      }
+      await Future.wait(futures);
+
+      setState(() {
+        _scanning = false;
+        _scanStatus = _boardIp != null ? 'Found board!' : 'Board not found on $subnet.*';
+      });
+    } catch (e) {
+      setState(() { _scanning = false; _scanStatus = 'Scan error: $e'; });
+    }
+  }
+
+  Future<void> _probeBoard(String ip) async {
+    if (_boardIp != null) return;
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(milliseconds: 800);
+      final req = await client.getUrl(Uri.parse('http://$ip/ota'));
+      final res = await req.close().timeout(const Duration(seconds: 1));
+      final body = await res.transform(const SystemEncoding().decoder).join();
+      client.close(force: true);
+      if (body.contains('ADV350')) {
+        setState(() { _boardIp = ip; _scanStatus = 'Found board!'; });
+      }
+    } catch (_) {}
   }
 
   String _formatSize(int bytes) {
@@ -145,6 +199,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
             ),
+          ],
+          if (_devMode) ...[
+            const Divider(color: Colors.white12),
+            _sectionHeader('Board Scanner'),
+            ListTile(
+              leading: Icon(
+                _boardIp != null ? Icons.wifi : Icons.search,
+                color: _boardIp != null ? Colors.greenAccent : Colors.white54,
+              ),
+              title: Text(
+                _boardIp != null ? 'Board: $_boardIp' : 'Scan for ESP32 board',
+                style: const TextStyle(color: Colors.white),
+              ),
+              subtitle: Text(
+                _scanStatus.isEmpty ? 'Find board IP on local network' : _scanStatus,
+                style: const TextStyle(color: Colors.white38, fontSize: 12),
+              ),
+              trailing: _scanning
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                  : IconButton(
+                      icon: const Icon(Icons.radar, color: Colors.blue),
+                      onPressed: _scanForBoard,
+                    ),
+            ),
+            if (_boardIp != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.system_update, size: 16),
+                        label: const Text('Open OTA'),
+                        onPressed: () => launchUrl(Uri.parse('http://$_boardIp/ota')),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.dashboard, size: 16),
+                        label: const Text('Web Debug'),
+                        onPressed: () => launchUrl(Uri.parse('http://$_boardIp/log')),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
           ],
           if (_backupFiles.isNotEmpty) ...[
             const Divider(color: Colors.white12),
