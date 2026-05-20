@@ -10,3 +10,4 @@ firmware/.cache/
 cloud/node_modules/
 .wrangler/
 ψ/
+backups/
