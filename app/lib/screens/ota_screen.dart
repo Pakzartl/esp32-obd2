@@ -42,8 +42,10 @@ class _OtaScreenState extends State<OtaScreen> {
       _checking = false;
       if (_latestFirmware == null) {
         _status = 'Could not check for updates';
-      } else if (_currentVersion != null &&
-          !_otaService.isNewer(_latestFirmware!.version, _currentVersion!)) {
+        _error = 'Failed to reach update server';
+      } else if (_currentVersion == null) {
+        _status = 'Update available (device not connected)';
+      } else if (!_otaService.isNewer(_latestFirmware!.version, _currentVersion!)) {
         _status = 'Firmware is up to date';
       } else {
         _status = 'Update available';
@@ -97,8 +99,8 @@ class _OtaScreenState extends State<OtaScreen> {
 
   bool get _hasUpdate =>
       _latestFirmware != null &&
-      _currentVersion != null &&
-      _otaService.isNewer(_latestFirmware!.version, _currentVersion!);
+      (_currentVersion == null ||
+          _otaService.isNewer(_latestFirmware!.version, _currentVersion!));
 
   @override
   Widget build(BuildContext context) {

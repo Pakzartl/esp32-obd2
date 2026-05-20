@@ -59,12 +59,14 @@ export default {
 
 async function handleFirmwareLatest(env: Env): Promise<Response> {
   const res = await fetch(
-    "https://api.github.com/repos/Pakzartl/esp32-obd2/releases/latest",
+    "https://api.github.com/repos/Pakzartl/esp32-obd2/releases?per_page=5",
     { headers: { "User-Agent": "adv350-worker" } }
   );
   if (!res.ok) return json({ error: "github unavailable" }, 502);
-  const release = await res.json<{ tag_name: string; body: string; assets: { name: string; size: number; browser_download_url: string }[] }>();
-  const bin = release.assets?.find((a) => a.name.endsWith(".bin"));
+  const releases = await res.json<{ tag_name: string; body: string; prerelease: boolean; assets: { name: string; size: number; browser_download_url: string }[] }[]>();
+  const release = releases?.find((r) => r.assets?.some((a) => a.name.endsWith(".bin")));
+  if (!release) return json({ error: "no firmware release found" }, 404);
+  const bin = release.assets.find((a) => a.name.endsWith(".bin"));
   return json({
     version: release.tag_name?.replace(/^v/, ""),
     changelog: release.body ?? "",
