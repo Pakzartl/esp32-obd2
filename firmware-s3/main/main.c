@@ -1,0 +1,69 @@
+#include <stdio.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_event.h"
+#include "esp_netif.h"
+#include "nvs_flash.h"
+#include "driver/gpio.h"
+#include "espnow_rx.h"
+#include "ble_relay.h"
+
+static const char *TAG = "RELAY";
+
+#define LED_GPIO  GPIO_NUM_2
+
+static void status_task(void *arg)
+{
+    bool led_on = false;
+    while (1) {
+        bool fresh = relay_data_fresh();
+
+        // LED: fast blink = no data, slow blink = receiving, solid = BLE connected
+        gpio_set_level(LED_GPIO, led_on ? 0 : 1);
+        led_on = !led_on;
+
+        if (fresh) {
+            const relay_packet_t *p = &g_relay.pkt;
+            ESP_LOGI(TAG, "seq=%d RPM=%d SPD=%d CLT=%d THR=%d peer=%s",
+                     p->seq,
+                     (p->vd_flags & RF_RPM) ? p->vd_rpm : 0,
+                     (p->vd_flags & RF_SPEED) ? p->vd_speed : 0,
+                     (p->vd_flags & RF_COOLANT) ? p->vd_coolant_enc - 40 : -99,
+                     (p->vd_flags & RF_THROTTLE) ? (p->vd_throttle_enc * 100 / 255) : -1,
+                     g_relay.peer_known ? "yes" : "no");
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(fresh ? 2000 : 500));
+    }
+}
+
+void app_main(void)
+{
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    gpio_config_t led_cfg = {
+        .pin_bit_mask = (1ULL << LED_GPIO),
+        .mode = GPIO_MODE_OUTPUT,
+    };
+    gpio_config(&led_cfg);
+
+    ESP_LOGI(TAG, "=== ADV350 BLE Relay (ESP32-S3) %s ===", FW_VERSION_S3);
+    ESP_LOGI(TAG, "Free heap: %lu", (unsigned long)esp_get_free_heap_size());
+
+    espnow_rx_init();
+    ble_relay_init();
+
+    ESP_LOGI(TAG, "Waiting for ESP-NOW data from CAN board...");
+    ESP_LOGI(TAG, "Free heap after init: %lu", (unsigned long)esp_get_free_heap_size());
+
+    xTaskCreate(status_task, "status", 2048, NULL, 2, NULL);
+}

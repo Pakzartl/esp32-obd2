@@ -24,6 +24,7 @@
 #include "host/ble_gatt.h"
 #include "obd2.h"
 #include "metrics.h"
+#include "espnow_tx.h"
 
 #define FW_VERSION "0.3.0"
 
@@ -1288,9 +1289,10 @@ static void led_task(void *arg)
 
 static void ble_reboot_task(void *arg)
 {
-    vTaskDelay(pdMS_TO_TICKS(300));
-    ESP_LOGI(TAG, "BLE: rebooting after disconnect...");
-    esp_restart();
+    vTaskDelay(pdMS_TO_TICKS(500));
+    ESP_LOGI(TAG, "BLE: re-advertising after disconnect...");
+    ble_advertise();
+    vTaskDelete(NULL);
 }
 
 // Metrics + vehicle data notification task (10 Hz)
@@ -1335,10 +1337,12 @@ static void metrics_task(void *arg)
 
 static void start_prod_mode(void)
 {
-    ESP_LOGI(TAG, "=== PROD MODE (BLE + CAN + OBD2 + Metrics) ===");
+    ESP_LOGI(TAG, "=== PROD MODE (BLE + CAN + OBD2 + Metrics + ESP-NOW) ===");
 
     obd2_init();
     metrics_init();
+
+    espnow_tx_init();
 
     ESP_LOGI(TAG, "Free heap before BLE: %lu", (unsigned long)esp_get_free_heap_size());
     ble_init();
@@ -1350,7 +1354,8 @@ static void start_prod_mode(void)
     xTaskCreatePinnedToCore(metrics_task, "metrics", 3072, NULL, 4, NULL, 1);
     xTaskCreatePinnedToCore(obd2_poll_task, "obd2_poll", 4096, NULL, 4, &obd2_poll_task_handle, 1);
     obd2_polling_active = true;
-    ESP_LOGI(TAG, "UDS polling auto-started (PROD mode)");
+    xTaskCreate(espnow_tx_task, "espnow_tx", 2048, NULL, 3, NULL);
+    ESP_LOGI(TAG, "UDS polling + ESP-NOW sender started (PROD mode)");
 
     gpio_set_level(LED_GPIO, 1);
     ESP_LOGI(TAG, "LED off (GPIO%d)", LED_GPIO);

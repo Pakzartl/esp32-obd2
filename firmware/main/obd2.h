@@ -46,23 +46,10 @@
 #define DID_ENGINE_LOAD        0xF404
 #define DID_MAP_KPA            0xF40B
 #define DID_INTAKE_AIR_TEMP    0xF40F
-// Unsupported by ADV350 ECU (NRC 0x31 confirmed):
-// 0xF442 Battery Voltage, 0xF45E Fuel Rate,
-// 0xF401, 0xF402, 0xF403, 0xF406, 0xF407, 0xF40E, 0xF41C
-
-// Multi-frame responses (ISO-TP required)
-#define DID_MONITOR_STATUS     0x0100  // 59 bytes, confirmed multi-frame
-#define DID_LAMBDA             0x0124  // confirmed multi-frame
-
-// ISO-TP multi-frame reassembly
-#define ISOTP_MAX_LEN  64
-typedef struct {
-    uint8_t buf[ISOTP_MAX_LEN];
-    uint16_t expected_len;
-    uint16_t received_len;
-    uint8_t next_seq;
-    bool active;
-} isotp_rx_t;
+#define DID_BATTERY_VOLTAGE    0xF442
+#define DID_FUEL_RATE          0xF45E
+#define DID_INJECTOR_PW        0x0100  // Honda-specific, needs verification
+#define DID_LAMBDA             0x0124  // Honda-specific, needs verification
 
 // Stale threshold (microseconds)
 #define SENSOR_STALE_US  3000000  // 3 seconds

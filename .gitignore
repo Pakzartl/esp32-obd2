@@ -7,6 +7,11 @@ firmware/sdkconfig
 firmware/managed_components/
 firmware/dependencies.lock
 firmware/.cache/
+firmware-s3/build/
+firmware-s3/sdkconfig
+firmware-s3/managed_components/
+firmware-s3/dependencies.lock
+firmware-s3/.cache/
 cloud/node_modules/
 .wrangler/
 ψ/
