@@ -4,13 +4,11 @@ import '../models/telemetry.dart';
 import '../services/ble_service.dart';
 import '../services/database_service.dart';
 import '../services/raw_backup_service.dart';
-import '../widgets/gauge_card.dart';
-import 'scan_screen.dart';
-import 'history_screen.dart';
-import 'raw_log_screen.dart';
-import 'metrics_screen.dart';
-import 'ota_screen.dart';
 import 'settings_screen.dart';
+import 'tabs/ride_tab.dart';
+import 'tabs/trip_tab.dart';
+import 'tabs/vehicle_tab.dart';
+import 'tabs/dev_tab.dart';
 
 class DashboardScreen extends StatefulWidget {
   final BleService bleService;
@@ -25,7 +23,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final _db = DatabaseService();
   final _rawBackup = RawBackupService();
   Telemetry _current = Telemetry.empty();
-  bool _connected = true;
+  BleState _bleState = BleState.connecting;
   bool _skipBle = false;
   int _savedCount = 0;
   int _rawCount = 0;
@@ -44,7 +42,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _initBackupAndStart() async {
     _skipBle = await SettingsScreen.isSkipBle();
     if (_skipBle) {
-      setState(() => _connected = false);
+      setState(() => _bleState = BleState.disconnected);
       return;
     }
     await _rawBackup.startSession();
@@ -67,10 +65,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
     });
     _connectionSub = widget.bleService.connectionStream.listen((connected) {
-      setState(() => _connected = connected);
-      if (!connected && mounted) {
+      setState(() => _bleState = connected ? BleState.connected : BleState.disconnected);
+      if (connected) {
+        widget.bleService.startLiveNotify();
+      } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Disconnected from device')),
+          const SnackBar(content: Text('Disconnected — reconnecting...')),
         );
       }
     });
@@ -85,225 +85,57 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.dispose();
   }
 
-  Widget _buildGauges() {
-    return Column(
-      children: [
-        // Hero speed
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          child: Column(
-            children: [
-              Text(
-                '${_current.speed}',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 72,
-                  fontWeight: FontWeight.bold,
-                  fontFamily: 'monospace',
-                ),
-              ),
-              const Text(
-                'km/h',
-                style: TextStyle(color: Colors.white54, fontSize: 16),
-              ),
-            ],
-          ),
-        ),
-        Expanded(
-          child: Padding(
-            padding: const EdgeInsets.all(8),
-            child: GridView.count(
-              crossAxisCount: 2,
-              mainAxisSpacing: 8,
-              crossAxisSpacing: 8,
-              childAspectRatio: 1.5,
-              children: [
-                GaugeCard(
-                  label: 'RPM',
-                  value: '${_current.rpm}',
-                  unit: '',
-                  icon: Icons.speed,
-                  color: _current.rpm > 7000 ? Colors.red : Colors.orange,
-                ),
-                GaugeCard(
-                  label: 'Throttle',
-                  value: '${_current.throttle}',
-                  unit: '%',
-                  icon: Icons.flash_on,
-                  color: Colors.green,
-                ),
-                GaugeCard(
-                  label: 'Coolant',
-                  value: '${_current.coolantTemp}',
-                  unit: '°C',
-                  icon: Icons.thermostat,
-                  color: _current.coolantTemp > 105
-                      ? Colors.red
-                      : _current.coolantTemp > 90
-                          ? Colors.orange
-                          : Colors.blue,
-                ),
-                GaugeCard(
-                  label: 'MAP',
-                  value: '${_current.mapKpa}',
-                  unit: 'kPa',
-                  icon: Icons.compress,
-                  color: Colors.purple,
-                ),
-                GaugeCard(
-                  label: 'IAT',
-                  value: '${_current.iat}',
-                  unit: '°C',
-                  icon: Icons.air,
-                  color: Colors.cyan,
-                ),
-                GaugeCard(
-                  label: 'Load',
-                  value: '${_current.engineLoad}',
-                  unit: '%',
-                  icon: Icons.engineering,
-                  color: Colors.amber,
-                ),
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text(_tabIndex == 0 ? 'ADV350 Dashboard' : 'Raw CAN Log'),
-        backgroundColor: Colors.black87,
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.sensors),
-            tooltip: 'Ping',
-            onPressed: () async {
-              final ok = await widget.bleService.ping();
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(ok ? 'Ping OK — LED blink' : 'Ping failed'),
-                    duration: const Duration(seconds: 1),
-                  ),
-                );
-              }
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.system_update),
-            tooltip: 'Firmware Update',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => OtaScreen(bleService: widget.bleService),
-              ),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.history),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const HistoryScreen()),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const SettingsScreen()),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.bluetooth_disabled),
-            onPressed: () async {
-              await widget.bleService.clearLastDevice();
-              await widget.bleService.disconnect();
-              if (mounted) {
-                Navigator.pushReplacement(
-                  context,
-                  MaterialPageRoute(builder: (_) => const ScanScreen()),
-                );
-              }
-            },
-          ),
-        ],
-      ),
       backgroundColor: Colors.grey[900],
-      body: Column(
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            color: _skipBle ? Colors.orange[800] : _connected ? Colors.green[800] : Colors.red[800],
-            child: Row(
-              children: [
-                Icon(
-                  _skipBle ? Icons.bug_report : _connected ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
-                  color: Colors.white,
-                  size: 16,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  _skipBle ? 'Debugging — BLE skipped' : _connected ? 'Connected' : 'Disconnected',
-                  style: const TextStyle(color: Colors.white, fontSize: 13),
-                ),
-                const Spacer(),
-                if (_rawCount > 0)
-                  Row(
-                    children: [
-                      const Icon(Icons.fiber_manual_record, color: Colors.redAccent, size: 10),
-                      const SizedBox(width: 4),
-                      Text(
-                        '$_rawCount raw',
-                        style: const TextStyle(color: Colors.redAccent, fontSize: 12),
-                      ),
-                    ],
-                  ),
-                if (_savedCount > 0)
-                  Padding(
-                    padding: const EdgeInsets.only(left: 8),
-                    child: Text(
-                      '$_savedCount db',
-                      style: const TextStyle(color: Colors.white38, fontSize: 12),
-                    ),
-                  ),
-              ],
+      body: SafeArea(
+        child: IndexedStack(
+          index: _tabIndex,
+          children: [
+            RideTab(
+              current: _current,
+              bleState: _bleState,
             ),
-          ),
-          Expanded(
-            child: _tabIndex == 0
-                ? _buildGauges()
-                : _tabIndex == 1
-                    ? const MetricsScreen()
-                    : RawLogScreen(bleService: widget.bleService),
-          ),
-        ],
+            TripTab(current: _current),
+            VehicleTab(current: _current),
+            DevTab(
+              bleService: widget.bleService,
+              connected: _bleState == BleState.connected,
+              skipBle: _skipBle,
+              savedCount: _savedCount,
+              rawCount: _rawCount,
+            ),
+          ],
+        ),
       ),
-      floatingActionButton: null,
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _tabIndex,
-        onTap: (i) => setState(() => _tabIndex = i),
-        backgroundColor: Colors.black87,
-        selectedItemColor: Colors.blue,
-        unselectedItemColor: Colors.white38,
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.dashboard),
-            label: 'Dashboard',
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tabIndex,
+        onDestinationSelected: (i) => setState(() => _tabIndex = i),
+        backgroundColor: Colors.black,
+        indicatorColor: Colors.blue.withValues(alpha: 0.2),
+        height: 64,
+        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.motorcycle, color: Colors.white38),
+            selectedIcon: Icon(Icons.motorcycle, color: Colors.blue),
+            label: 'Ride',
           ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.analytics),
-            label: 'Metrics',
+          NavigationDestination(
+            icon: Icon(Icons.analytics_outlined, color: Colors.white38),
+            selectedIcon: Icon(Icons.analytics, color: Colors.blue),
+            label: 'Trip',
           ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.terminal),
-            label: 'Raw Log',
+          NavigationDestination(
+            icon: Icon(Icons.directions_car_outlined, color: Colors.white38),
+            selectedIcon: Icon(Icons.directions_car, color: Colors.blue),
+            label: 'Vehicle',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.developer_mode_outlined, color: Colors.white38),
+            selectedIcon: Icon(Icons.developer_mode, color: Colors.blue),
+            label: 'Dev',
           ),
         ],
       ),

@@ -11,6 +11,11 @@ class Telemetry {
   final String rawBleHex;
   final DateTime timestamp;
   final bool synced;
+  // Live-only fields (not persisted to DB)
+  final double fuelRateLph;
+  final double batteryV;
+  final double cvtRatio;
+  final int ridingScore;
 
   Telemetry({
     this.id,
@@ -25,6 +30,10 @@ class Telemetry {
     this.rawBleHex = '',
     required this.timestamp,
     this.synced = false,
+    this.fuelRateLph = 0,
+    this.batteryV = 0,
+    this.cvtRatio = 0,
+    this.ridingScore = 0,
   });
 
   // Accumulated state from multiple UDS frames
@@ -36,6 +45,10 @@ class Telemetry {
   static int _iat = 0;
   static int _engineLoad = 0;
   static int _ignitionTiming = 0;
+  static double _fuelRateLph = 0;
+  static double _batteryV = 0;
+  static double _cvtRatio = 0;
+  static int _ridingScore = 0;
   static String _lastRawHex = '';
 
   // Parse 16-byte packed vehicle data from S3 relay (def3 characteristic)
@@ -52,6 +65,12 @@ class Telemetry {
     if (flags & 0x08 != 0) _throttle = (data[6] * 100 / 255).round();
     if (flags & 0x10 != 0) _mapKpa = data[7];
     if (flags & 0x20 != 0) _iat = data[8] - 40;
+    if (flags & 0x40 != 0) _batteryV = (data[9] | (data[10] << 8)) / 100.0;
+    if (flags & 0x80 != 0) {
+      _fuelRateLph = (data[11] | (data[12] << 8)) / 100.0;
+      _cvtRatio = (data[13] | (data[14] << 8)) / 100.0;
+      _ridingScore = data[15];
+    }
 
     return Telemetry._current();
   }
@@ -116,6 +135,10 @@ class Telemetry {
         ignitionTiming: _ignitionTiming,
         rawBleHex: _lastRawHex,
         timestamp: DateTime.now(),
+        fuelRateLph: _fuelRateLph,
+        batteryV: _batteryV,
+        cvtRatio: _cvtRatio,
+        ridingScore: _ridingScore,
       );
 
   factory Telemetry.empty() => Telemetry(
@@ -144,6 +167,9 @@ class Telemetry {
         'engine_load': engineLoad,
         'ignition_timing': ignitionTiming,
         'raw_ble_hex': rawBleHex,
+        'fuel_rate_lph': fuelRateLph,
+        'cvt_ratio': cvtRatio,
+        'riding_score': ridingScore,
         'timestamp': timestamp.millisecondsSinceEpoch,
         'synced': synced ? 1 : 0,
       };
@@ -159,6 +185,9 @@ class Telemetry {
         engineLoad: (map['engine_load'] as int?) ?? 0,
         ignitionTiming: (map['ignition_timing'] as int?) ?? 0,
         rawBleHex: (map['raw_ble_hex'] as String?) ?? '',
+        fuelRateLph: (map['fuel_rate_lph'] as num?)?.toDouble() ?? 0,
+        cvtRatio: (map['cvt_ratio'] as num?)?.toDouble() ?? 0,
+        ridingScore: (map['riding_score'] as int?) ?? 0,
         timestamp:
             DateTime.fromMillisecondsSinceEpoch(map['timestamp'] as int),
         synced: (map['synced'] as int) == 1,

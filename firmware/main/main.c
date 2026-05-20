@@ -26,7 +26,7 @@
 #include "metrics.h"
 #include "espnow_tx.h"
 
-#define FW_VERSION "0.3.0"
+#define FW_VERSION "0.4.0"
 
 static const char *TAG = "ADV350";
 

@@ -24,8 +24,9 @@ class Adv350App extends StatelessWidget {
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
           seedColor: Colors.blue,
-          brightness: Brightness.light,
+          brightness: Brightness.dark,
         ),
+        scaffoldBackgroundColor: Colors.grey[900],
         useMaterial3: true,
       ),
       home: const StartupScreen(),
@@ -50,82 +51,46 @@ class _StartupScreenState extends State<StartupScreen> {
   }
 
   Future<void> _init() async {
-    if (await SettingsScreen.isSkipBle()) {
-      _goDemo();
-      return;
-    }
     final lastId = await _bleService.lastDeviceId;
     if (lastId == null) {
-      _goScan();
+      // First time — onboard pair
+      if (mounted) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const ScanScreen()),
+        );
+      }
       return;
     }
 
-    for (int attempt = 0; attempt < 3; attempt++) {
-      if (!mounted) return;
-      if (attempt > 0) await Future.delayed(const Duration(seconds: 2));
-      final results = await _bleService.scan(timeout: const Duration(seconds: 5));
-      final match = results.where((r) => r.device.remoteId.str == lastId);
-      if (match.isNotEmpty && mounted) {
-        try {
-          await _bleService.connect(match.first.device);
-          if (mounted) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (_) => DashboardScreen(bleService: _bleService),
-              ),
-            );
-            return;
-          }
-        } catch (_) {}
-      }
+    // Go to Ride immediately, auto-connect BLE in background
+    if (mounted) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => DashboardScreen(bleService: _bleService),
+        ),
+      );
     }
-    _goScan();
+    _autoConnect(lastId);
   }
 
-  void _goScan() {
-    if (!mounted) return;
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (_) => const ScanScreen()),
-    );
-  }
-
-  void _goDemo() {
-    if (!mounted) return;
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(
-        builder: (_) => DashboardScreen(bleService: _bleService),
-      ),
-    );
+  Future<void> _autoConnect(String lastId) async {
+    for (int attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await Future.delayed(const Duration(seconds: 2));
+      try {
+        final results = await _bleService.scan(timeout: const Duration(seconds: 5));
+        final match = results.where((r) => r.device.remoteId.str == lastId);
+        if (match.isNotEmpty) {
+          await _bleService.connect(match.first.device);
+          return;
+        }
+      } catch (_) {}
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.grey[900],
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const CircularProgressIndicator(color: Colors.blue),
-            const SizedBox(height: 16),
-            const Text(
-              'Connecting to ADV350...',
-              style: TextStyle(color: Colors.white70, fontSize: 16),
-            ),
-            const SizedBox(height: 32),
-            TextButton(
-              onPressed: _goDemo,
-              child: const Text(
-                'Skip — Demo Mode',
-                style: TextStyle(color: Colors.white38, fontSize: 14),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+    return const Scaffold(backgroundColor: Color(0xFF212121));
   }
 }

@@ -14,7 +14,7 @@ class DatabaseService {
     final path = join(await getDatabasesPath(), 'adv350.db');
     return openDatabase(
       path,
-      version: 4,
+      version: 6,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE telemetry (
@@ -30,6 +30,9 @@ class DatabaseService {
             engine_load INTEGER NOT NULL DEFAULT 0,
             ignition_timing INTEGER NOT NULL DEFAULT 0,
             raw_ble_hex TEXT NOT NULL DEFAULT '',
+            fuel_rate_lph REAL NOT NULL DEFAULT 0,
+            cvt_ratio REAL NOT NULL DEFAULT 0,
+            riding_score INTEGER NOT NULL DEFAULT 0,
             timestamp INTEGER NOT NULL,
             synced INTEGER NOT NULL DEFAULT 0
           )
@@ -73,6 +76,62 @@ class DatabaseService {
           ''');
           await db.execute('DROP TABLE telemetry');
           await db.execute('ALTER TABLE telemetry_new RENAME TO telemetry');
+        }
+        if (oldVersion < 5) {
+          await db.execute('ALTER TABLE telemetry ADD COLUMN fuel_rate_lph REAL NOT NULL DEFAULT 0');
+          await db.execute('ALTER TABLE telemetry ADD COLUMN cvt_ratio REAL NOT NULL DEFAULT 0');
+          await db.execute('ALTER TABLE telemetry ADD COLUMN riding_score INTEGER NOT NULL DEFAULT 0');
+          // Backfill from raw_ble_hex (16-byte vehicle_data packet)
+          // bytes 11-12 = fuel_rate*100, 13-14 = cvt*100, 15 = score
+          final rows = await db.query('telemetry',
+              columns: ['id', 'raw_ble_hex'],
+              where: "raw_ble_hex != '' AND length(raw_ble_hex) >= 32");
+          final batch = db.batch();
+          for (final row in rows) {
+            final hex = row['raw_ble_hex'] as String;
+            try {
+              final fuelLo = int.parse(hex.substring(22, 24), radix: 16);
+              final fuelHi = int.parse(hex.substring(24, 26), radix: 16);
+              final cvtLo = int.parse(hex.substring(26, 28), radix: 16);
+              final cvtHi = int.parse(hex.substring(28, 30), radix: 16);
+              final score = int.parse(hex.substring(30, 32), radix: 16);
+              final fuelRate = (fuelLo | (fuelHi << 8)) / 100.0;
+              final cvtRatio = (cvtLo | (cvtHi << 8)) / 100.0;
+              batch.update('telemetry', {
+                'fuel_rate_lph': fuelRate,
+                'cvt_ratio': cvtRatio,
+                'riding_score': score,
+              }, where: 'id = ?', whereArgs: [row['id']]);
+            } catch (_) {}
+          }
+          await batch.commit(noResult: true);
+        }
+        if (oldVersion < 6) {
+          // Re-run backfill for DBs that hit v5 without backfill
+          final rows = await db.query('telemetry',
+              columns: ['id', 'raw_ble_hex'],
+              where: "raw_ble_hex != '' AND length(raw_ble_hex) >= 32 AND fuel_rate_lph = 0");
+          final batch = db.batch();
+          for (final row in rows) {
+            final hex = row['raw_ble_hex'] as String;
+            try {
+              final fuelLo = int.parse(hex.substring(22, 24), radix: 16);
+              final fuelHi = int.parse(hex.substring(24, 26), radix: 16);
+              final cvtLo = int.parse(hex.substring(26, 28), radix: 16);
+              final cvtHi = int.parse(hex.substring(28, 30), radix: 16);
+              final score = int.parse(hex.substring(30, 32), radix: 16);
+              final fuelRate = (fuelLo | (fuelHi << 8)) / 100.0;
+              final cvtRatio = (cvtLo | (cvtHi << 8)) / 100.0;
+              if (fuelRate > 0 || cvtRatio > 0 || score > 0) {
+                batch.update('telemetry', {
+                  'fuel_rate_lph': fuelRate,
+                  'cvt_ratio': cvtRatio,
+                  'riding_score': score,
+                }, where: 'id = ?', whereArgs: [row['id']]);
+              }
+            } catch (_) {}
+          }
+          await batch.commit(noResult: true);
         }
       },
     );
