@@ -14,7 +14,7 @@
 
 static const char *TAG = "BLE";
 
-#define BLE_DEVICE_NAME "ADV350"
+#define BLE_DEVICE_NAME "ADV350-R"
 
 static uint16_t ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static volatile bool data_notify = false;
@@ -305,20 +305,27 @@ static void notify_task(void *arg)
     ESP_LOGI(TAG, "Notify task started (10 Hz)");
 
     while (1) {
-        if (ble_conn_handle != BLE_HS_CONN_HANDLE_NONE && data_notify &&
+        uint16_t handle = ble_conn_handle;
+        if (handle != BLE_HS_CONN_HANDLE_NONE && data_notify &&
             relay_data_fresh()) {
             // Vehicle data
             uint8_t vbuf[16];
             build_vehicle_buf(vbuf);
             struct os_mbuf *om = ble_hs_mbuf_from_flat(vbuf, 16);
-            if (om) ble_gatts_notify_custom(ble_conn_handle, vd_chr_handle, om);
+            if (om) {
+                int rc = ble_gatts_notify_custom(handle, vd_chr_handle, om);
+                if (rc != 0) {
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                    continue;
+                }
+            }
 
             // Metrics
             if (g_relay.pkt.metrics_valid) {
                 int16_t mbuf[8];
                 build_metrics_buf(mbuf);
                 om = ble_hs_mbuf_from_flat(mbuf, sizeof(mbuf));
-                if (om) ble_gatts_notify_custom(ble_conn_handle, mt_chr_handle, om);
+                if (om) ble_gatts_notify_custom(handle, mt_chr_handle, om);
             }
         }
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -346,7 +353,7 @@ void ble_relay_init(void)
     ble_hs_cfg.sm_sc = 0;
 
     nimble_port_freertos_init(host_task);
-    xTaskCreatePinnedToCore(notify_task, "ble_notify", 3072, NULL, 4, NULL, 0);
+    xTaskCreatePinnedToCore(notify_task, "ble_notify", 3072, NULL, 4, NULL, 1);
 
     ESP_LOGI(TAG, "BLE relay initialized");
 }

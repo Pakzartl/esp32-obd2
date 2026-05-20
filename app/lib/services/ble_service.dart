@@ -8,13 +8,15 @@ class BleService {
       '12345678-1234-5678-1234-56789abcdef0';
   static const String canFrameCharUuid =
       '12345678-1234-5678-1234-56789abcdef1';
+  static const String vehicleDataCharUuid =
+      '12345678-1234-5678-1234-56789abcdef3';
   static const String canCtrlCharUuid =
       '12345678-1234-5678-1234-56789abcdef2';
   static const String otaDataCharUuid =
       '12345678-1234-5678-1234-56789abcdef6';
   static const String fwVersionCharUuid =
       '12345678-1234-5678-1234-56789abcdef7';
-  static const String deviceName = 'ADV350';
+  static const String deviceName = 'ADV350-R';
 
   BluetoothDevice? _device;
   BluetoothCharacteristic? _ctrlChar;
@@ -55,7 +57,10 @@ class BleService {
 
     final sub = FlutterBluePlus.scanResults.listen((r) {
       for (final result in r) {
-        if (result.device.platformName == deviceName &&
+        final name = result.advertisementData.advName.isNotEmpty
+            ? result.advertisementData.advName
+            : result.device.platformName;
+        if (name.startsWith('ADV350') &&
             !results
                 .any((e) => e.device.remoteId == result.device.remoteId)) {
           results.add(result);
@@ -100,15 +105,27 @@ class BleService {
       if (service.uuid.toString() == canServiceUuid) {
         for (final char in service.characteristics) {
           final uuid = char.uuid.toString();
-          if (uuid == canFrameCharUuid) {
-            await char.setNotifyValue(true);
+          if (uuid == vehicleDataCharUuid) {
+            try { await char.setNotifyValue(true); } catch (_) {}
+            _subscription?.cancel();
             _subscription = char.lastValueStream.listen((data) {
               if (data.isNotEmpty) {
                 _rawDataController.add(data);
-                final telemetry = Telemetry.fromBleData(data);
+                final telemetry = Telemetry.fromVehicleData(data);
                 _telemetryController.add(telemetry);
               }
             });
+          } else if (uuid == canFrameCharUuid) {
+            try { await char.setNotifyValue(true); } catch (_) {}
+            if (_subscription == null) {
+              _subscription = char.lastValueStream.listen((data) {
+                if (data.isNotEmpty) {
+                  _rawDataController.add(data);
+                  final telemetry = Telemetry.fromBleData(data);
+                  _telemetryController.add(telemetry);
+                }
+              });
+            }
           } else if (uuid == canCtrlCharUuid) {
             _ctrlChar = char;
           } else if (uuid == otaDataCharUuid) {
@@ -122,7 +139,14 @@ class BleService {
   }
 
   Future<void> startLiveNotify() async {
-    await _ctrlChar?.write([0x01]);
+    for (int i = 0; i < 5; i++) {
+      try {
+        await _ctrlChar?.write([0x01]);
+        return;
+      } catch (_) {
+        await Future.delayed(Duration(milliseconds: 300 * (i + 1)));
+      }
+    }
   }
 
   Future<void> stopLiveNotify() async {

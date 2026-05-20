@@ -132,21 +132,31 @@ static void parse_read_data_response(const uint8_t *data, uint8_t len)
         }
         break;
 
-    case DID_BATTERY_VOLTAGE:
-        if (vlen >= 2) {
-            sensor_set(&g_vehicle.battery_v, ((float)val[0] * 256.0f + val[1]) / 1000.0f);
+    case DID_IGNITION_TIMING:
+        if (vlen >= 1) {
+            float deg = val[0] / 2.0f - 64.0f;
+            sensor_set(&g_vehicle.ignition_timing_deg, deg);
+            ESP_LOGI(TAG, "Ign timing: %.1f deg", deg);
         }
         break;
 
-    case DID_FUEL_RATE:
-        if (vlen >= 2) {
-            sensor_set(&g_vehicle.fuel_rate_lph, ((float)val[0] * 256.0f + val[1]) * 0.05f);
+    case DID_SHORT_FUEL_TRIM:
+        if (vlen >= 1) {
+            float pct = ((float)val[0] - 128.0f) * 100.0f / 128.0f;
+            sensor_set(&g_vehicle.short_fuel_trim_pct, pct);
+            ESP_LOGI(TAG, "Short FT: %.1f%%", pct);
         }
         break;
 
-    case DID_INJECTOR_PW:
-        if (vlen >= 2) {
-            sensor_set(&g_vehicle.injector_pw_us, (float)val[0] * 256.0f + val[1]);
+    case DID_O2_SENSORS:
+        if (vlen >= 1) {
+            ESP_LOGI(TAG, "O2 sensors: 0x%02X", val[0]);
+        }
+        break;
+
+    case DID_OBD_COMPLIANCE:
+        if (vlen >= 1) {
+            ESP_LOGI(TAG, "OBD compliance: 0x%02X", val[0]);
         }
         break;
 
@@ -284,9 +294,22 @@ void obd2_probe_dids(void)
 // ── UDS Polling Task ──
 
 static const uint16_t poll_dids[] = {
+    // Confirmed working
     DID_RPM, DID_SPEED, DID_THROTTLE, DID_COOLANT_TEMP,
     DID_ENGINE_LOAD, DID_MAP_KPA, DID_INTAKE_AIR_TEMP,
-    DID_BATTERY_VOLTAGE, DID_FUEL_RATE,
+    DID_LAMBDA,
+    // Discovery — untried, ECU may or may not respond
+    0xF400, 0xF420, 0xF440,   // Supported PID bitmasks
+    0xF40A,                    // Fuel Pressure
+    0xF410,                    // MAF Air Flow
+    0xF41F,                    // Run Time Since Start
+    0xF42F,                    // Fuel Tank Level
+    0xF430,                    // Warmups Since Clear
+    0xF431,                    // Distance Since Clear
+    0xF433,                    // Barometric Pressure
+    0xF444,                    // Commanded AFR
+    0xF446,                    // Ambient Air Temp
+    0xF45C,                    // Engine Oil Temp
 };
 #define POLL_DID_COUNT (sizeof(poll_dids) / sizeof(poll_dids[0]))
 

@@ -8,6 +8,8 @@ typedef struct {
     int64_t        last_rx_us;
     uint8_t        peer_mac[6];
     bool           peer_known;
+    uint32_t       rx_count;
+    uint32_t       rx_lost;
 } relay_state_t;
 
 extern relay_state_t g_relay;

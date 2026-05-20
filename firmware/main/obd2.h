@@ -48,6 +48,10 @@
 #define DID_INTAKE_AIR_TEMP    0xF40F
 #define DID_BATTERY_VOLTAGE    0xF442
 #define DID_FUEL_RATE          0xF45E
+#define DID_IGNITION_TIMING    0xF40E
+#define DID_SHORT_FUEL_TRIM    0xF406
+#define DID_O2_SENSORS         0xF412
+#define DID_OBD_COMPLIANCE     0xF41C
 #define DID_INJECTOR_PW        0x0100  // Honda-specific, needs verification
 #define DID_LAMBDA             0x0124  // Honda-specific, needs verification
 
@@ -89,6 +93,8 @@ typedef struct {
     sensor_t fuel_level_pct;
     sensor_t lambda;
     sensor_t injector_pw_us;
+    sensor_t ignition_timing_deg;
+    sensor_t short_fuel_trim_pct;
 
     bool session_active;
     bool dids_probed;

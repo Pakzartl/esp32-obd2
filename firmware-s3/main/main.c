@@ -17,21 +17,36 @@ static const char *TAG = "RELAY";
 static void status_task(void *arg)
 {
     bool led_on = false;
+    uint32_t tick = 0;
+
     while (1) {
         bool fresh = relay_data_fresh();
 
-        // LED: fast blink = no data, slow blink = receiving, solid = BLE connected
         gpio_set_level(LED_GPIO, led_on ? 0 : 1);
         led_on = !led_on;
 
         if (fresh) {
             const relay_packet_t *p = &g_relay.pkt;
-            ESP_LOGI(TAG, "seq=%d RPM=%d SPD=%d CLT=%d THR=%d peer=%s",
+            ESP_LOGI(TAG, "seq=%d RPM=%d SPD=%d CLT=%d THR=%d",
                      p->seq,
                      (p->vd_flags & RF_RPM) ? p->vd_rpm : 0,
                      (p->vd_flags & RF_SPEED) ? p->vd_speed : 0,
                      (p->vd_flags & RF_COOLANT) ? p->vd_coolant_enc - 40 : -99,
-                     (p->vd_flags & RF_THROTTLE) ? (p->vd_throttle_enc * 100 / 255) : -1,
+                     (p->vd_flags & RF_THROTTLE) ? (p->vd_throttle_enc * 100 / 255) : -1);
+        }
+
+        tick++;
+        if (tick % 15 == 0) {
+            uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000);
+            float loss_pct = g_relay.rx_count > 0
+                ? (float)g_relay.rx_lost / (g_relay.rx_count + g_relay.rx_lost) * 100.0f
+                : 0;
+            ESP_LOGI(TAG, "[STATS] up=%lus heap=%lu rx=%lu lost=%lu (%.1f%%) peer=%s",
+                     (unsigned long)uptime_s,
+                     (unsigned long)esp_get_free_heap_size(),
+                     (unsigned long)g_relay.rx_count,
+                     (unsigned long)g_relay.rx_lost,
+                     loss_pct,
                      g_relay.peer_known ? "yes" : "no");
         }
 

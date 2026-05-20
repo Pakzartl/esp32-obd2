@@ -11,7 +11,7 @@
 
 static const char *TAG = "ENOW-TX";
 
-static const uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+static const uint8_t s3_mac[6] = {0xE0, 0x72, 0xA1, 0xD6, 0xBF, 0x94};
 
 static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len)
 {
@@ -98,7 +98,7 @@ esp_err_t espnow_tx_init(void)
         .channel = 0,
         .encrypt = false,
     };
-    memcpy(peer.peer_addr, broadcast_mac, 6);
+    memcpy(peer.peer_addr, s3_mac, 6);
     ESP_ERROR_CHECK(esp_now_add_peer(&peer));
 
     ESP_LOGI(TAG, "ESP-NOW sender ready (ch 1, broadcast)");
@@ -113,7 +113,7 @@ void espnow_tx_task(void *arg)
     while (1) {
         relay_packet_t pkt;
         build_packet(&pkt);
-        esp_now_send(broadcast_mac, (uint8_t *)&pkt, sizeof(pkt));
+        esp_now_send(s3_mac, (uint8_t *)&pkt, sizeof(pkt));
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }

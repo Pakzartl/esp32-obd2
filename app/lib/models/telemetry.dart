@@ -38,6 +38,24 @@ class Telemetry {
   static int _ignitionTiming = 0;
   static String _lastRawHex = '';
 
+  // Parse 16-byte packed vehicle data from S3 relay (def3 characteristic)
+  // [flags:2][rpm:2][speed:1][coolant+40:1][throttle*2.55:1][map:1][iat+40:1][batt*100:2][fuel_rate*100:2][cvt*100:2][score:1]
+  factory Telemetry.fromVehicleData(List<int> data) {
+    if (data.length < 16) return Telemetry.empty();
+
+    _lastRawHex = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
+
+    final flags = data[0] | (data[1] << 8);
+    if (flags & 0x01 != 0) _rpm = data[2] | (data[3] << 8);
+    if (flags & 0x02 != 0) _speed = data[4];
+    if (flags & 0x04 != 0) _coolantTemp = data[5] - 40;
+    if (flags & 0x08 != 0) _throttle = (data[6] * 100 / 255).round();
+    if (flags & 0x10 != 0) _mapKpa = data[7];
+    if (flags & 0x20 != 0) _iat = data[8] - 40;
+
+    return Telemetry._current();
+  }
+
   factory Telemetry.fromBleData(List<int> data) {
     if (data.length < 5) return Telemetry.empty();
 

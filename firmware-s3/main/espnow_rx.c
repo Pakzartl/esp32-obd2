@@ -24,8 +24,17 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
     const relay_packet_t *pkt = (const relay_packet_t *)data;
     if (pkt->magic != RELAY_MAGIC || pkt->version != RELAY_VERSION) return;
 
+    // Track packet loss in callback (accurate)
+    if (g_relay.rx_count > 0) {
+        uint8_t expected = ((const relay_packet_t *)&g_relay.pkt)->seq + 1;
+        if (pkt->seq != expected) {
+            g_relay.rx_lost += (uint8_t)(pkt->seq - expected);
+        }
+    }
+
     memcpy(&g_relay.pkt, pkt, sizeof(relay_packet_t));
     g_relay.last_rx_us = esp_timer_get_time();
+    g_relay.rx_count++;
 
     if (!g_relay.peer_known) {
         memcpy(g_relay.peer_mac, info->src_addr, 6);
@@ -51,7 +60,7 @@ esp_err_t espnow_rx_init(void)
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA,
-        WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR));
+        WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));
     ESP_ERROR_CHECK(esp_wifi_start());
 
     // Lock to channel 1 (must match sender)
