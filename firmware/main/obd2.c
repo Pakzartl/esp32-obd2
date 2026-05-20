@@ -133,21 +133,15 @@ static void parse_read_data_response(const uint8_t *data, uint8_t len)
         }
         break;
 
-    case DID_BATTERY_VOLTAGE:
+    case 0xF442: // Battery Voltage (NRC 0x31 confirmed, kept for future)
         if (vlen >= 2) {
             sensor_set(&g_vehicle.battery_v, ((float)val[0] * 256.0f + val[1]) / 1000.0f);
         }
         break;
 
-    case DID_FUEL_RATE:
+    case 0xF45E: // Fuel Rate (NRC 0x31 confirmed, kept for future)
         if (vlen >= 2) {
             sensor_set(&g_vehicle.fuel_rate_lph, ((float)val[0] * 256.0f + val[1]) * 0.05f);
-        }
-        break;
-
-    case DID_INJECTOR_PW:
-        if (vlen >= 2) {
-            sensor_set(&g_vehicle.injector_pw_us, (float)val[0] * 256.0f + val[1]);
         }
         break;
 
@@ -343,13 +337,34 @@ void obd2_probe_dids(void)
     g_vehicle.supported_did_count = 0;
 
     static const uint16_t probe_dids[] = {
+        // Confirmed working (single frame)
         DID_RPM, DID_SPEED, DID_COOLANT_TEMP, DID_THROTTLE,
         DID_ENGINE_LOAD, DID_MAP_KPA, DID_INTAKE_AIR_TEMP,
-        DID_BATTERY_VOLTAGE, DID_FUEL_RATE,
-        DID_INJECTOR_PW, DID_LAMBDA,
-        // Honda-specific DIDs to try
-        0x0001, 0x0002, 0x0003, 0x0010, 0x0011, 0x0012,
-        0x0020, 0x0021, 0x0100, 0x0101,
+        // Confirmed working (multi-frame)
+        DID_MONITOR_STATUS, DID_LAMBDA,
+        // Supported PID bitmasks — tells us what ECU supports
+        0xF400, 0xF420, 0xF440,
+        // Untried standard OBD-II PIDs (0xF4xx = Honda mapping)
+        0xF40A, // Fuel Pressure
+        0xF410, // MAF Air Flow
+        0xF413, // O2 Sensors Present
+        0xF414, // O2 Sensor B1S1 Voltage
+        0xF415, // O2 Sensor B1S2 Voltage
+        0xF41F, // Run Time Since Start
+        0xF421, // Distance with MIL On
+        0xF42C, // Commanded EGR
+        0xF42F, // Fuel Tank Level
+        0xF430, // Warmups Since Clear
+        0xF431, // Distance Since Clear
+        0xF433, // Barometric Pressure
+        0xF43C, // Catalyst Temp B1S1
+        0xF444, // Commanded AFR
+        0xF445, // Relative Throttle
+        0xF446, // Ambient Air Temp
+        0xF44C, // Commanded Throttle
+        0xF451, // Fuel Type
+        0xF45C, // Engine Oil Temp
+        // Honda proprietary
         0xF190, // VIN
         0xF194, // System supplier ECU HW number
     };
