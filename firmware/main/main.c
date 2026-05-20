@@ -30,8 +30,43 @@
 
 static const char *TAG = "ADV350";
 
-#define WIFI_SSID      CONFIG_WIFI_SSID
-#define WIFI_PASS      CONFIG_WIFI_PASS
+#define WIFI_SSID_KEY  "wifi_ssid"
+#define WIFI_PASS_KEY  "wifi_pass"
+#define WIFI_SSID_DEFAULT "ADV350"
+#define WIFI_PASS_DEFAULT ""
+
+static char s_wifi_ssid[33] = {0};
+static char s_wifi_pass[65] = {0};
+
+static void wifi_load_creds(void)
+{
+    nvs_handle_t nvs;
+    size_t len;
+    if (nvs_open("config", NVS_READONLY, &nvs) == ESP_OK) {
+        len = sizeof(s_wifi_ssid);
+        if (nvs_get_str(nvs, WIFI_SSID_KEY, s_wifi_ssid, &len) != ESP_OK) {
+            strncpy(s_wifi_ssid, WIFI_SSID_DEFAULT, sizeof(s_wifi_ssid));
+        }
+        len = sizeof(s_wifi_pass);
+        if (nvs_get_str(nvs, WIFI_PASS_KEY, s_wifi_pass, &len) != ESP_OK) {
+            strncpy(s_wifi_pass, WIFI_PASS_DEFAULT, sizeof(s_wifi_pass));
+        }
+        nvs_close(nvs);
+    } else {
+        strncpy(s_wifi_ssid, WIFI_SSID_DEFAULT, sizeof(s_wifi_ssid));
+    }
+}
+
+static void wifi_save_creds(const char *ssid, const char *pass)
+{
+    nvs_handle_t nvs;
+    if (nvs_open("config", NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_set_str(nvs, WIFI_SSID_KEY, ssid);
+        nvs_set_str(nvs, WIFI_PASS_KEY, pass);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+}
 #define CAN_TX_GPIO    GPIO_NUM_26
 #define CAN_RX_GPIO    GPIO_NUM_27
 #define MODE_BTN_GPIO  GPIO_NUM_0
@@ -264,12 +299,10 @@ static void wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
 
-    wifi_config_t wifi_config = {
-        .sta = {
-            .ssid = WIFI_SSID,
-            .password = WIFI_PASS,
-        },
-    };
+    wifi_load_creds();
+    wifi_config_t wifi_config = {0};
+    strncpy((char *)wifi_config.sta.ssid, s_wifi_ssid, sizeof(wifi_config.sta.ssid));
+    strncpy((char *)wifi_config.sta.password, s_wifi_pass, sizeof(wifi_config.sta.password));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -740,7 +773,7 @@ static void start_dev_mode(void)
     obd2_init();
     metrics_init();
 
-    ESP_LOGI(TAG, "Connecting to WiFi '%s'...", WIFI_SSID);
+    ESP_LOGI(TAG, "Connecting to WiFi '%s'...", s_wifi_ssid);
     wifi_init_sta();
 
     for (int i = 0; i < 20 && !wifi_connected; i++) {
