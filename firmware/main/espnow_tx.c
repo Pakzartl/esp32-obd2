@@ -59,9 +59,29 @@ static void build_packet(relay_packet_t *pkt)
     v = vd_iat(&g_vehicle);
     if (v > -100) { flags |= RF_IAT; pkt->vd_iat_enc = (uint8_t)(v + 40); }
 
+    if (sensor_fresh(&g_vehicle.engine_load_pct)) {
+        flags |= RF_ENGINE_LOAD;
+        pkt->vd_engine_load_enc = (uint8_t)(g_vehicle.engine_load_pct.value * 2.55f);
+    }
+
     if (sensor_fresh(&g_vehicle.battery_v)) {
         flags |= RF_BATTERY;
         pkt->vd_battery_cv = (uint16_t)(g_vehicle.battery_v.value * 100);
+    }
+
+    if (sensor_fresh(&g_vehicle.ignition_timing_deg)) {
+        flags |= RF_IGN_TIMING;
+        pkt->vd_ign_timing = (int8_t)g_vehicle.ignition_timing_deg.value;
+    }
+
+    if (sensor_fresh(&g_vehicle.short_fuel_trim_pct)) {
+        flags |= RF_STFT;
+        pkt->vd_stft = (int8_t)g_vehicle.short_fuel_trim_pct.value;
+    }
+
+    if (sensor_fresh(&g_vehicle.lambda)) {
+        flags |= RF_LAMBDA;
+        pkt->vd_lambda_x1000 = (uint16_t)(g_vehicle.lambda.value * 1000);
     }
 
     if (g_metrics.valid) {
@@ -69,6 +89,7 @@ static void build_packet(relay_packet_t *pkt)
         pkt->vd_fuel_rate_x100 = (uint16_t)(g_metrics.fuel_rate_lph * 100);
         pkt->vd_cvt_x100 = (uint16_t)(g_metrics.cvt_ratio * 100);
         pkt->vd_score = g_metrics.riding_score;
+        pkt->vd_is_braking = g_metrics.is_braking ? 1 : 0;
         pkt->metrics_valid = 1;
         pkt->mt_accel_x100 = (int16_t)(g_metrics.accel_ms2 * 100);
         pkt->mt_gforce_x1000 = (int16_t)(g_metrics.gforce_x * 1000);

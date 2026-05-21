@@ -83,6 +83,12 @@ class RideTab extends StatelessWidget {
             ),
           ),
         ),
+        // Fuel efficiency suggestion
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: _FuelHint(speed: current.speed, fuelRate: current.fuelRateLph, rpm: current.rpm),
+        ),
+        const SizedBox(height: 12),
         // RPM bar
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -277,6 +283,74 @@ class _SecondaryGauge extends StatelessWidget {
             style: TextStyle(color: Colors.grey[600], fontSize: 12),
           ),
           const Spacer(),
+        ],
+      ),
+    );
+  }
+}
+
+class _FuelHint extends StatelessWidget {
+  final int speed;
+  final double fuelRate;
+  final int rpm;
+
+  const _FuelHint({required this.speed, required this.fuelRate, required this.rpm});
+
+  @override
+  Widget build(BuildContext context) {
+    if (rpm == 0) return const SizedBox.shrink();
+
+    final Color color;
+    final String hint;
+    final IconData icon;
+
+    if (speed == 0) {
+      // Idling
+      color = Colors.orange;
+      hint = 'Idle ${fuelRate.toStringAsFixed(1)} L/h';
+      icon = Icons.pause_circle_outline;
+    } else if (fuelRate < 0.01) {
+      color = Colors.grey;
+      hint = '--';
+      icon = Icons.eco;
+    } else {
+      final kmpl = speed / fuelRate;
+      if (kmpl >= 30) {
+        color = Colors.greenAccent;
+        hint = '${kmpl.round()} km/L — Eco';
+        icon = Icons.eco;
+      } else if (kmpl >= 15) {
+        color = Colors.orange;
+        hint = '${kmpl.round()} km/L — Moderate';
+        icon = Icons.local_gas_station;
+      } else {
+        color = Colors.redAccent;
+        hint = '${kmpl.round()} km/L — Heavy';
+        icon = Icons.local_fire_department;
+      }
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, color: color, size: 16),
+          const SizedBox(width: 8),
+          Text(
+            hint,
+            style: TextStyle(
+              color: color,
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ],
       ),
     );

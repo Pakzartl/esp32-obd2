@@ -125,6 +125,11 @@ void metrics_update(void)
         }
     }
 
+    // STFT correction (multiplicative, from ECU O2 feedback)
+    if (fuel_rate > 0 && sensor_fresh(&g_vehicle.short_fuel_trim_pct)) {
+        fuel_rate *= (1.0f + g_vehicle.short_fuel_trim_pct.value / 100.0f);
+    }
+
     // Fuel cut detection: throttle closed + engine braking
     if (throttle >= 0 && throttle < 2.0f && rpm > 2000) {
         fuel_rate = 0;

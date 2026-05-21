@@ -9,6 +9,7 @@
 #include "driver/gpio.h"
 #include "espnow_rx.h"
 #include "ble_relay.h"
+#include "smart_features.h"
 
 static const char *TAG = "RELAY";
 
@@ -22,17 +23,28 @@ static void status_task(void *arg)
     while (1) {
         bool fresh = relay_data_fresh();
 
-        gpio_set_level(LED_GPIO, led_on ? 0 : 1);
-        led_on = !led_on;
-
         if (fresh) {
             const relay_packet_t *p = &g_relay.pkt;
-            ESP_LOGI(TAG, "seq=%d RPM=%d SPD=%d CLT=%d THR=%d",
+            smart_features_update(p);
+
+            // LED: alert = rapid flash, normal = slow blink, no data = fast blink
+            if (g_alerts.any_active) {
+                gpio_set_level(LED_GPIO, (tick % 2) ? 0 : 1);
+            } else {
+                gpio_set_level(LED_GPIO, led_on ? 0 : 1);
+                led_on = !led_on;
+            }
+
+            ESP_LOGI(TAG, "seq=%d RPM=%d SPD=%d CLT=%d THR=%d trip=%s",
                      p->seq,
                      (p->vd_flags & RF_RPM) ? p->vd_rpm : 0,
                      (p->vd_flags & RF_SPEED) ? p->vd_speed : 0,
                      (p->vd_flags & RF_COOLANT) ? p->vd_coolant_enc - 40 : -99,
-                     (p->vd_flags & RF_THROTTLE) ? (p->vd_throttle_enc * 100 / 255) : -1);
+                     (p->vd_flags & RF_THROTTLE) ? (p->vd_throttle_enc * 100 / 255) : -1,
+                     g_trip.state == TRIP_ACTIVE ? "ACTIVE" : "idle");
+        } else {
+            gpio_set_level(LED_GPIO, led_on ? 0 : 1);
+            led_on = !led_on;
         }
 
         tick++;
@@ -41,12 +53,16 @@ static void status_task(void *arg)
             float loss_pct = g_relay.rx_count > 0
                 ? (float)g_relay.rx_lost / (g_relay.rx_count + g_relay.rx_lost) * 100.0f
                 : 0;
-            ESP_LOGI(TAG, "[STATS] up=%lus heap=%lu rx=%lu lost=%lu (%.1f%%) peer=%s",
+            float board_temp = smart_get_board_temp();
+            ESP_LOGI(TAG, "[STATS] up=%lus heap=%lu rx=%lu lost=%lu (%.1f%%) board=%.1fC trip#%lu(%lus) peer=%s",
                      (unsigned long)uptime_s,
                      (unsigned long)esp_get_free_heap_size(),
                      (unsigned long)g_relay.rx_count,
                      (unsigned long)g_relay.rx_lost,
                      loss_pct,
+                     board_temp,
+                     (unsigned long)g_trip.trip_count,
+                     (unsigned long)g_trip.active_seconds,
                      g_relay.peer_known ? "yes" : "no");
         }
 
@@ -74,6 +90,7 @@ void app_main(void)
     ESP_LOGI(TAG, "=== ADV350 BLE Relay (ESP32-S3) %s ===", FW_VERSION_S3);
     ESP_LOGI(TAG, "Free heap: %lu", (unsigned long)esp_get_free_heap_size());
 
+    smart_features_init();
     espnow_rx_init();
     ble_relay_init();
 

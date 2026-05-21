@@ -2,29 +2,31 @@
 #include <stdint.h>
 
 // ESP-NOW wire format: ESP32 CAN board --> ESP32-S3 BLE relay
-// Payload ~44 bytes, well within ESP-NOW 250-byte limit.
-// Values are pre-encoded to match BLE GATT packet format so the
-// relay can forward with zero re-encoding.
+// All sensor data included. ~60 bytes, well within ESP-NOW 250-byte limit.
 
 #define RELAY_MAGIC    0xAD
-#define RELAY_VERSION  1
+#define RELAY_VERSION  2
 
-// vd_flags bits (same as BLE vehicle_data flags)
-#define RF_RPM       (1 << 0)
-#define RF_SPEED     (1 << 1)
-#define RF_COOLANT   (1 << 2)
-#define RF_THROTTLE  (1 << 3)
-#define RF_MAP       (1 << 4)
-#define RF_IAT       (1 << 5)
-#define RF_BATTERY   (1 << 6)
-#define RF_METRICS   (1 << 7)
+// vd_flags bits
+#define RF_RPM         (1 << 0)
+#define RF_SPEED       (1 << 1)
+#define RF_COOLANT     (1 << 2)
+#define RF_THROTTLE    (1 << 3)
+#define RF_MAP         (1 << 4)
+#define RF_IAT         (1 << 5)
+#define RF_BATTERY     (1 << 6)
+#define RF_METRICS     (1 << 7)
+#define RF_ENGINE_LOAD (1 << 8)
+#define RF_IGN_TIMING  (1 << 9)
+#define RF_STFT        (1 << 10)
+#define RF_LAMBDA      (1 << 11)
 
 typedef struct __attribute__((packed)) {
     uint8_t  magic;
     uint8_t  version;
     uint8_t  seq;
     uint8_t  _pad;
-    // -- vehicle (BLE-ready encoded) --
+    // -- vehicle sensors --
     uint16_t vd_flags;
     uint16_t vd_rpm;
     uint8_t  vd_speed;
@@ -32,12 +34,18 @@ typedef struct __attribute__((packed)) {
     uint8_t  vd_throttle_enc;     // percent * 2.55
     uint8_t  vd_map;              // kPa
     uint8_t  vd_iat_enc;          // celsius + 40
-    uint8_t  _pad2;
+    uint8_t  vd_engine_load_enc;  // percent * 2.55
     uint16_t vd_battery_cv;       // volt * 100
     uint16_t vd_fuel_rate_x100;   // L/h * 100
-    uint16_t vd_cvt_x100;        // ratio * 100
+    uint16_t vd_cvt_x100;         // ratio * 100
     uint8_t  vd_score;            // 0-100
     uint8_t  metrics_valid;
+    // -- new sensors (v2) --
+    int8_t   vd_ign_timing;       // degrees (A/2 - 64 pre-computed)
+    int8_t   vd_stft;             // percent (signed, -128 to +127)
+    uint16_t vd_lambda_x1000;     // lambda * 1000 (1000 = stoich)
+    uint8_t  vd_is_braking;
+    uint8_t  _pad3;
     // -- metrics (int16 matching BLE metrics packet) --
     int16_t  mt_accel_x100;
     int16_t  mt_gforce_x1000;
@@ -54,6 +62,6 @@ typedef struct __attribute__((packed)) {
 
 typedef struct __attribute__((packed)) {
     uint8_t magic;
-    uint8_t cmd;        // same byte values as BLE control (0x10-0x13)
+    uint8_t cmd;
     uint8_t data[4];
 } relay_cmd_t;
