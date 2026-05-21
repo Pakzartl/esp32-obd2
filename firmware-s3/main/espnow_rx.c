@@ -65,9 +65,10 @@ esp_err_t espnow_rx_init(void)
     wifi_config_t ap_cfg = {
         .ap = {
             .ssid = "ADV350-Setup",
+            .password = "pakzartl",
             .channel = 1,
             .max_connection = 2,
-            .authmode = WIFI_AUTH_OPEN,
+            .authmode = WIFI_AUTH_WPA2_PSK,
         },
     };
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));

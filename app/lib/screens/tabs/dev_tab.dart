@@ -38,6 +38,8 @@ class _DevTabState extends State<DevTab> {
   BleService get bleService => widget.bleService;
   CloudSyncService get cloudSync => widget.cloudSync;
   bool _syncing = false;
+  Map<String, dynamic>? _mgmt;
+  bool _mgmtLoading = false;
 
   @override
   Widget build(BuildContext context) {
@@ -49,6 +51,9 @@ class _DevTabState extends State<DevTab> {
         const SizedBox(height: 16),
         // Debug counters
         _countersCard(),
+        const SizedBox(height: 16),
+        // Board management
+        _boardMgmtCard(context),
         const SizedBox(height: 16),
         // Cloud sync
         _cloudSyncCard(context),
@@ -272,6 +277,130 @@ class _DevTabState extends State<DevTab> {
         Text(label, style: TextStyle(color: Colors.grey[500], fontSize: 11)),
       ],
     );
+  }
+
+  Widget _boardMgmtCard(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.grey[850],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.blueGrey.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.developer_board, color: Colors.blueGrey, size: 20),
+              const SizedBox(width: 8),
+              Text('S3 Board',
+                  style: TextStyle(color: Colors.grey[400], fontSize: 13)),
+              const Spacer(),
+              if (_mgmtLoading)
+                const SizedBox(
+                  width: 14, height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blueGrey),
+                )
+              else
+                IconButton(
+                  icon: const Icon(Icons.refresh, size: 18),
+                  color: Colors.blueGrey,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  onPressed: connected ? _refreshMgmt : null,
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (_mgmt != null) ...[
+            _mgmtRow('Uptime', '${_mgmt!['uptime_h']}h ${_mgmt!['uptime_m']}m'),
+            _mgmtRow('Heap', '${_mgmt!['heap_kb']} KB'),
+            _mgmtRow('Board Temp', '${_mgmt!['board_temp']}°C'),
+            _mgmtRow('Log Records', '${_mgmt!['log_records']}'),
+            _mgmtRow('Log Used', '${_mgmt!['log_used_kb']} KB'),
+            _mgmtRow('Log Free', '${_mgmt!['log_free_kb']} KB'),
+            _mgmtRow('Trips', '${_mgmt!['trip_count']}'),
+            _mgmtRow('ESP-NOW Peer', _mgmt!['peer_known'] ? 'Yes' : 'No'),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      final ok = await bleService.clearLogs();
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(ok ? 'Logs cleared' : 'Failed')),
+                        );
+                        if (ok) _refreshMgmt();
+                      }
+                    },
+                    icon: const Icon(Icons.delete_outline, size: 16),
+                    label: const Text('Clear Logs'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.orange,
+                      side: const BorderSide(color: Colors.orange),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      final confirm = await showDialog<bool>(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          backgroundColor: Colors.grey[850],
+                          title: const Text('Restart S3?', style: TextStyle(color: Colors.white)),
+                          actions: [
+                            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                            TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Restart', style: TextStyle(color: Colors.red))),
+                          ],
+                        ),
+                      );
+                      if (confirm == true) await bleService.restartDevice();
+                    },
+                    icon: const Icon(Icons.restart_alt, size: 16),
+                    label: const Text('Restart'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.redAccent,
+                      side: const BorderSide(color: Colors.redAccent),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ] else
+            Center(
+              child: TextButton.icon(
+                onPressed: connected ? _refreshMgmt : null,
+                icon: const Icon(Icons.download, size: 16),
+                label: Text(connected ? 'Read Board Info' : 'Not connected'),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _mgmtRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+          Text(value, style: const TextStyle(color: Colors.white, fontSize: 12, fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _refreshMgmt() async {
+    setState(() => _mgmtLoading = true);
+    final info = await bleService.readMgmtInfo();
+    if (mounted) setState(() { _mgmt = info; _mgmtLoading = false; });
   }
 
   Widget _cloudSyncCard(BuildContext context) {

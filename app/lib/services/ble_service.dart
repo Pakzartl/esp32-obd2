@@ -16,12 +16,15 @@ class BleService {
       '12345678-1234-5678-1234-56789abcdef6';
   static const String fwVersionCharUuid =
       '12345678-1234-5678-1234-56789abcdef7';
+  static const String mgmtCharUuid =
+      '12345678-1234-5678-1234-56789abcdef9';
   static const String deviceName = 'ADV350-R';
 
   BluetoothDevice? _device;
   BluetoothCharacteristic? _ctrlChar;
   BluetoothCharacteristic? _otaDataChar;
   BluetoothCharacteristic? _fwVersionChar;
+  BluetoothCharacteristic? _mgmtChar;
   StreamSubscription? _subscription;
   StreamSubscription? _connStateSub;
   bool _autoReconnect = true;
@@ -132,6 +135,8 @@ class BleService {
             _otaDataChar = char;
           } else if (uuid == fwVersionCharUuid) {
             _fwVersionChar = char;
+          } else if (uuid == mgmtCharUuid) {
+            _mgmtChar = char;
           }
         }
       }
@@ -173,6 +178,49 @@ class BleService {
         await connect(results.first.device);
         return;
       } catch (_) {}
+    }
+  }
+
+  Future<Map<String, dynamic>?> readMgmtInfo() async {
+    if (_mgmtChar == null) return null;
+    try {
+      final d = await _mgmtChar!.read();
+      if (d.length < 16) return null;
+      return {
+        'uptime_h': d[0],
+        'uptime_m': d[1],
+        'heap_kb': d[2] | (d[3] << 8),
+        'board_temp': d[4] - 40,
+        'log_records': d[5] | (d[6] << 8),
+        'log_used_kb': d[7] | (d[8] << 8),
+        'log_free_kb': d[9] | (d[10] << 8),
+        'trip_count': d[11],
+        'trip_active': d[12] == 1,
+        'peer_known': d[13] == 1,
+        'ota_state': d[14],
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<bool> clearLogs() async {
+    if (_mgmtChar == null) return false;
+    try {
+      await _mgmtChar!.write([0x01]);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> restartDevice() async {
+    if (_mgmtChar == null) return false;
+    try {
+      await _mgmtChar!.write([0x02]);
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -242,6 +290,7 @@ class BleService {
     _ctrlChar = null;
     _otaDataChar = null;
     _fwVersionChar = null;
+    _mgmtChar = null;
     _connectionController.add(false);
   }
 

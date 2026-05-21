@@ -2,7 +2,10 @@
 #include "espnow_rx.h"
 #include "ble_ota.h"
 #include "smart_features.h"
+#include "flash_logger.h"
 #include <string.h>
+#include "esp_timer.h"
+#include "esp_system.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -53,6 +56,10 @@ static const ble_uuid128_t fw_chr_uuid =
 
 static const ble_uuid128_t ota_chr_uuid =
     BLE_UUID128_INIT(0xf8, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12,
+                     0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
+
+static const ble_uuid128_t mgmt_chr_uuid =
+    BLE_UUID128_INIT(0xf9, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12,
                      0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
 
 static uint16_t vd_chr_handle;
@@ -187,6 +194,64 @@ static int fw_access(uint16_t conn, uint16_t attr,
     return 0;
 }
 
+// ── Management characteristic (0xf9) ──
+// Read: 16-byte system info. Write: 0x01=clear logs, 0x02=restart
+
+static int mgmt_access(uint16_t conn, uint16_t attr,
+                       struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
+        uint32_t uptime = (uint32_t)(esp_timer_get_time() / 1000000);
+        uint16_t heap_kb = (uint16_t)(esp_get_free_heap_size() / 1024);
+        float bt = smart_get_board_temp();
+        logger_stats_t ls = flash_logger_stats();
+        uint16_t log_recs = (uint16_t)ls.record_count;
+        uint16_t log_used = (uint16_t)(ls.used_bytes / 1024);
+        uint16_t log_free = (uint16_t)(ls.free_bytes / 1024);
+
+        uint8_t buf[16];
+        buf[0] = (uint8_t)(uptime / 3600);
+        buf[1] = (uint8_t)((uptime % 3600) / 60);
+        memcpy(&buf[2], &heap_kb, 2);
+        buf[4] = (uint8_t)(bt + 40.0f);
+        memcpy(&buf[5], &log_recs, 2);
+        memcpy(&buf[7], &log_used, 2);
+        memcpy(&buf[9], &log_free, 2);
+        buf[11] = (uint8_t)g_trip.trip_count;
+        buf[12] = g_trip.state == TRIP_ACTIVE ? 1 : 0;
+        buf[13] = g_relay.peer_known ? 1 : 0;
+        buf[14] = (uint8_t)ble_ota_get_state();
+        buf[15] = 0;
+        os_mbuf_append(ctxt->om, buf, sizeof(buf));
+        return 0;
+    }
+
+    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return 0;
+
+    uint8_t cmd;
+    if (OS_MBUF_PKTLEN(ctxt->om) < 1) return 0;
+    os_mbuf_copydata(ctxt->om, 0, 1, &cmd);
+
+    switch (cmd) {
+    case 0x01:
+        flash_logger_clear();
+        ESP_LOGI(TAG, "BLE: logs cleared");
+        break;
+    case 0x02:
+        ESP_LOGI(TAG, "BLE: restart requested");
+        {
+            const esp_timer_create_args_t a = {
+                .callback = (esp_timer_cb_t)esp_restart, .name = "rst",
+            };
+            esp_timer_handle_t t;
+            esp_timer_create(&a, &t);
+            esp_timer_start_once(t, 500000);
+        }
+        break;
+    }
+    return 0;
+}
+
 // ── GATT Service Definition ──
 
 static const struct ble_gatt_svc_def gatt_svcs[] = {
@@ -232,6 +297,11 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                 .val_handle = &ble_ota_chr_handle,
                 .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE |
                          BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_NOTIFY,
+            },
+            {
+                .uuid = &mgmt_chr_uuid.u,
+                .access_cb = mgmt_access,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
             },
             { 0 },
         },
