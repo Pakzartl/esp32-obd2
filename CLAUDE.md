@@ -64,23 +64,40 @@ ECU ← UDS Poll (29-bit extended CAN, 500 kbps)
 │  ├── NimBLE peripheral          │
 │  ├── WiFi + HTTP server (debug) │
 │  ├── NVS (config: DEV/PROD)     │
+│  ├── ESP-NOW TX → S3            │
+│  └── OTA (dual partition)       │
+└─────────────────────────────────┘
+     ↓ ESP-NOW (relay packet v2)
+┌─────────────────────────────────┐
+│  ESP32-S3 BLE Relay             │
+│  ├── ESP-NOW RX (ch 1)          │
+│  ├── NimBLE peripheral          │
+│  ├── WiFi AP (ADV350-Setup)     │
+│  ├── HTTP config portal         │
+│  ├── SPIFFS data logger (384KB) │
+│  ├── Smart features (alerts,    │
+│  │   trip detect, board temp)   │
+│  ├── BLE OTA (char 0xf8)        │
+│  ├── BLE Mgmt (char 0xf9)       │
 │  └── OTA (dual partition)       │
 └─────────────────────────────────┘
      ↓ BLE GATT notify
 ┌─────────────────────────────────┐
 │  Flutter App (Android/iOS)      │
 │  ├── BLE scan + connect         │
-│  ├── UDS response decoder       │
-│  ├── SQLite (adv350.db)         │
-│  ├── Dashboard (decoded gauges) │
-│  ├── Metrics (MAX/AVG/MIN)      │
-│  └── Cloud sync → D1            │
+│  ├── Vehicle data decoder       │
+│  ├── SQLite (adv350.db v7)      │
+│  ├── 4-tab: Ride/Trip/Vehicle/  │
+│  │   Dev (board mgmt, OTA)      │
+│  ├── Cloud sync → D1            │
+│  └── BLE OTA firmware update    │
 └─────────────────────────────────┘
      ↓ HTTPS batch POST
 ┌─────────────────────────────────┐
 │  Cloudflare D1 + Worker         │
 │  POST /api/telemetry (batch)    │
 │  GET  /api/telemetry (query)    │
+│  GET  /api/firmware/latest (D1) │
 └─────────────────────────────────┘
 ```
 
@@ -174,24 +191,42 @@ adv350-logger/
 │   ├── CMakeLists.txt
 │   ├── sdkconfig.defaults     # 4MB flash, NimBLE, TWAI, WiFi, OTA
 │   └── partitions.csv         # OTA_0 + OTA_1 (1.75MB each)
+├── firmware-s3/               # ESP32-S3 BLE Relay firmware
+│   ├── main/
+│   │   ├── main.c             # Entry: ESP-NOW, BLE, WiFi, status task
+│   │   ├── espnow_rx.c/h     # ESP-NOW receiver, APSTA WiFi
+│   │   ├── ble_relay.c/h     # BLE GATT server, vehicle data notify
+│   │   ├── relay_packet.h    # Wire format v2 (ESP32↔S3)
+│   │   ├── smart_features.c/h # Alerts, trip detect, board temp
+│   │   ├── wifi_portal.c/h   # HTTP config portal on AP
+│   │   ├── flash_logger.c/h  # SPIFFS telemetry logger
+│   │   └── ble_ota.c/h       # BLE OTA firmware update
+│   ├── partitions.csv         # OTA_0 + OTA_1 + storage (384KB)
+│   └── sdkconfig.defaults
 ├── app/                       # Flutter app
 │   ├── lib/
 │   │   ├── main.dart
 │   │   ├── services/
-│   │   │   ├── ble_service.dart       # GATT connect, notifications
-│   │   │   └── database_service.dart  # SQLite CRUD
+│   │   │   ├── ble_service.dart       # GATT connect, notifications, mgmt, OTA
+│   │   │   ├── database_service.dart  # SQLite CRUD (v7: board_temp)
+│   │   │   ├── cloud_sync_service.dart # Cloudflare D1 batch sync
+│   │   │   └── ota_service.dart       # Firmware update check + BLE OTA
 │   │   ├── models/
-│   │   │   └── telemetry.dart         # UDS decoder, raw_ble_hex storage
+│   │   │   └── telemetry.dart         # Vehicle data decoder, raw_ble_hex
 │   │   └── screens/
 │   │       ├── scan_screen.dart
-│   │       ├── dashboard_screen.dart  # Decoded gauges, auto-save 1Hz
-│   │       ├── metrics_screen.dart    # Trip metrics, sparklines
+│   │       ├── dashboard_screen.dart  # 4-tab layout
+│   │       ├── tabs/ride_tab.dart     # Live gauges + fuel hint
+│   │       ├── tabs/trip_tab.dart     # Trip metrics, sparklines
+│   │       ├── tabs/vehicle_tab.dart  # All sensors + board temp
+│   │       ├── tabs/dev_tab.dart      # BLE mgmt, cloud sync, OTA, logs
+│   │       ├── ota_screen.dart        # Firmware update UI
 │   │       ├── raw_log_screen.dart
 │   │       └── history_screen.dart
-│   └── pubspec.yaml           # flutter_blue_plus, sqflite, shared_preferences
+│   └── pubspec.yaml
 ├── cloud/                     # Cloudflare D1 + Worker API
-│   ├── src/index.ts           # Worker: batch insert + query
-│   ├── schema.sql             # D1 telemetry table
+│   ├── src/index.ts           # Worker: telemetry + firmware API
+│   ├── schema.sql             # D1 tables (telemetry + firmware)
 │   ├── wrangler.jsonc         # D1 binding config
 │   └── package.json
 ├── docs/
@@ -247,12 +282,28 @@ ota_1,     app,  ota_1,    0x1E0000,  0x1C0000   (1.75 MB)
 
 ---
 
-## BLE Protocol
+## BLE Protocol (S3 Relay)
 
 - **Service UUID**: `12345678-1234-5678-1234-56789abcdef0`
-- **Frame characteristic**: `...def1` (notify — raw CAN/UDS frames)
-- **Control characteristic**: `...def2` (write — commands to firmware)
-- **Data format**: Raw BLE hex packets, UDS response (0x62 = ReadDataByIdentifier response)
+- **Frame char**: `...def1` (R/notify — raw CAN/UDS frames, placeholder)
+- **Control char**: `...def2` (R/W — notify toggle, forward cmds to CAN board)
+- **Vehicle data char**: `...def3` (R/notify — 17 bytes: flags+sensors+boardTemp)
+- **Metrics char**: `...def4` (R/notify — 16 bytes: 8×int16 derived metrics)
+- **DTC char**: `...def5` (R — placeholder)
+- **FW version char**: `...def7` (R — version string e.g. "0.5.1-relay")
+- **OTA char**: `...def8` (R/W/notify — firmware update: 0x01=begin, 0x02=data, 0x03=end, 0x04=abort)
+- **Mgmt char**: `...def9` (R/W — 16-byte board info read, 0x01=clear logs, 0x02=restart)
+
+### Vehicle Data Packet (17 bytes)
+```
+[0-1] vd_flags (uint16 LE)    [9-10] battery_cv (uint16 LE)
+[2-3] rpm (uint16 LE)         [11-12] fuel_rate_x100 (uint16 LE)
+[4]   speed (uint8)           [13-14] cvt_x100 (uint16 LE)
+[5]   coolant+40 (uint8)      [15] riding_score (uint8)
+[6]   throttle*2.55 (uint8)   [16] board_temp+40 (uint8)
+[7]   map_kpa (uint8)
+[8]   iat+40 (uint8)
+```
 
 ---
 
@@ -306,6 +357,10 @@ bun install
 bun run dev                    # Local dev
 bun run deploy                 # Deploy to Cloudflare
 bun run db:migrate             # Apply schema to D1
+
+# Query firmware table
+bunx wrangler d1 execute adv350-telemetry --remote \
+  --command "SELECT * FROM firmware ORDER BY id DESC LIMIT 5"
 ```
 
 ### Debugging
@@ -355,12 +410,36 @@ find /dev -name "cu.usb*" -maxdepth 1
 
 - [x] Read RPM, speed, throttle, coolant temp via UDS (14 DIDs confirmed)
 - [ ] Record real driving data with decoded values + raw_ble_hex
-- [ ] Cloud sync to Cloudflare D1 (batch upload from app)
-- [ ] OTA update working end-to-end
+- [x] Cloud sync to Cloudflare D1 (batch upload from app) — 2,936 rows synced
+- [x] OTA update — BLE OTA via char 0xf8 + firmware API on D1
 - [ ] Run 7 days continuous on bike without crash
-- [ ] App redesign: 4-tab layout (Ride/Trip/Vehicle/Dev)
+- [x] App redesign: 4-tab layout (Ride/Trip/Vehicle/Dev)
 - [ ] BLE stable connection (fix 30s dropout)
+- [x] S3 WiFi config portal (AP: ADV350-Setup, WPA2)
+- [x] S3 SPIFFS flash data logger (384KB, auto-log during trips)
+- [x] S3 board temp in BLE + app Vehicle tab
+- [x] S3 BLE management characteristic (board info, clear logs, restart)
 
 ---
 
-*Last updated: 2026-05-19*
+## Firmware Release Workflow
+
+```bash
+# 1. Build firmware
+cd firmware-s3 && idf.py build
+
+# 2. Create GitHub release with binary
+gh release create v0.X.Y build/adv350-s3-relay.bin \
+  -R Pakzartl/esp32-obd2 --title "vX.Y — description"
+
+# 3. Register version in D1 (no worker redeploy needed)
+cd cloud && bunx wrangler d1 execute adv350-telemetry --remote \
+  --command "INSERT INTO firmware (version, changelog, download_url, size) \
+  VALUES ('0.X.Y', 'changelog', 'https://github.com/Pakzartl/esp32-obd2/releases/download/v0.X.Y/adv350-s3-relay.bin', SIZE)"
+
+# 4. App auto-detects new version via GET /api/firmware/latest
+```
+
+---
+
+*Last updated: 2026-05-21*

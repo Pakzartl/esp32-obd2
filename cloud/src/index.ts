@@ -58,21 +58,11 @@ export default {
 };
 
 async function handleFirmwareLatest(env: Env): Promise<Response> {
-  const res = await fetch(
-    "https://api.github.com/repos/Pakzartl/esp32-obd2/releases?per_page=5",
-    { headers: { "User-Agent": "adv350-worker" } }
-  );
-  if (!res.ok) return json({ error: "github unavailable" }, 502);
-  const releases = await res.json<{ tag_name: string; body: string; prerelease: boolean; assets: { name: string; size: number; browser_download_url: string }[] }[]>();
-  const release = releases?.find((r) => r.assets?.some((a) => a.name.endsWith(".bin")));
-  if (!release) return json({ error: "no firmware release found" }, 404);
-  const bin = release.assets.find((a) => a.name.endsWith(".bin"));
-  return json({
-    version: release.tag_name?.replace(/^v/, ""),
-    changelog: release.body ?? "",
-    download_url: bin?.browser_download_url ?? null,
-    size: bin?.size ?? 0,
-  });
+  const row = await env.DB.prepare(
+    "SELECT version, changelog, download_url, size FROM firmware ORDER BY id DESC LIMIT 1"
+  ).first<{ version: string; changelog: string; download_url: string; size: number }>();
+  if (!row) return json({ error: "no firmware release found" }, 404);
+  return json(row);
 }
 
 async function handleBatchInsert(request: Request, env: Env): Promise<Response> {

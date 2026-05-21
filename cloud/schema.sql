@@ -18,3 +18,12 @@ CREATE TABLE IF NOT EXISTS telemetry (
 CREATE INDEX IF NOT EXISTS idx_telemetry_recorded ON telemetry(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_telemetry_device ON telemetry(device_id);
 CREATE INDEX IF NOT EXISTS idx_telemetry_trip ON telemetry(trip_id);
+
+CREATE TABLE IF NOT EXISTS firmware (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  version TEXT NOT NULL,
+  changelog TEXT NOT NULL DEFAULT '',
+  download_url TEXT NOT NULL,
+  size INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
