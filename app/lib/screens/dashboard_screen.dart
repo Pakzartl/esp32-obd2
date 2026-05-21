@@ -4,6 +4,8 @@ import '../models/telemetry.dart';
 import '../services/ble_service.dart';
 import '../services/database_service.dart';
 import '../services/raw_backup_service.dart';
+import '../services/cloud_sync_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'settings_screen.dart';
 import 'tabs/ride_tab.dart';
 import 'tabs/trip_tab.dart';
@@ -22,6 +24,7 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   final _db = DatabaseService();
   final _rawBackup = RawBackupService();
+  late final CloudSyncService _cloudSync = CloudSyncService(_db);
   Telemetry _current = Telemetry.empty();
   BleState _bleState = BleState.connecting;
   bool _skipBle = false;
@@ -46,6 +49,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return;
     }
     await _rawBackup.startSession();
+    final prefs = await SharedPreferences.getInstance();
+    final apiKey = prefs.getString('cloud_api_key') ?? '';
+    if (apiKey.isNotEmpty) {
+      _cloudSync.configure(apiKey: apiKey);
+      _cloudSync.startPeriodic();
+    }
     widget.bleService.startLiveNotify();
 
     _rawSub = widget.bleService.rawDataStream.listen((data) {
@@ -82,6 +91,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _rawSub?.cancel();
     _connectionSub?.cancel();
     _rawBackup.endSession();
+    _cloudSync.dispose();
     super.dispose();
   }
 
@@ -101,6 +111,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             VehicleTab(current: _current),
             DevTab(
               bleService: widget.bleService,
+              cloudSync: _cloudSync,
               connected: _bleState == BleState.connected,
               skipBle: _skipBle,
               savedCount: _savedCount,
