@@ -14,7 +14,7 @@ class DatabaseService {
     final path = join(await getDatabasesPath(), 'adv350.db');
     return openDatabase(
       path,
-      version: 6,
+      version: 7,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE telemetry (
@@ -33,6 +33,7 @@ class DatabaseService {
             fuel_rate_lph REAL NOT NULL DEFAULT 0,
             cvt_ratio REAL NOT NULL DEFAULT 0,
             riding_score INTEGER NOT NULL DEFAULT 0,
+            board_temp INTEGER NOT NULL DEFAULT 0,
             timestamp INTEGER NOT NULL,
             synced INTEGER NOT NULL DEFAULT 0
           )
@@ -132,6 +133,9 @@ class DatabaseService {
             } catch (_) {}
           }
           await batch.commit(noResult: true);
+        }
+        if (oldVersion < 7) {
+          await db.execute('ALTER TABLE telemetry ADD COLUMN board_temp INTEGER NOT NULL DEFAULT 0');
         }
       },
     );

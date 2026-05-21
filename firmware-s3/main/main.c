@@ -10,6 +10,8 @@
 #include "espnow_rx.h"
 #include "ble_relay.h"
 #include "smart_features.h"
+#include "flash_logger.h"
+#include "wifi_portal.h"
 
 static const char *TAG = "RELAY";
 
@@ -27,7 +29,10 @@ static void status_task(void *arg)
             const relay_packet_t *p = &g_relay.pkt;
             smart_features_update(p);
 
-            // LED: alert = rapid flash, normal = slow blink, no data = fast blink
+            if (g_trip.state == TRIP_ACTIVE) {
+                flash_logger_write(p, (uint16_t)g_trip.trip_count);
+            }
+
             if (g_alerts.any_active) {
                 gpio_set_level(LED_GPIO, (tick % 2) ? 0 : 1);
             } else {
@@ -91,11 +96,13 @@ void app_main(void)
     ESP_LOGI(TAG, "Free heap: %lu", (unsigned long)esp_get_free_heap_size());
 
     smart_features_init();
+    flash_logger_init();
     espnow_rx_init();
+    wifi_portal_init();
     ble_relay_init();
 
     ESP_LOGI(TAG, "Waiting for ESP-NOW data from CAN board...");
     ESP_LOGI(TAG, "Free heap after init: %lu", (unsigned long)esp_get_free_heap_size());
 
-    xTaskCreate(status_task, "status", 2048, NULL, 2, NULL);
+    xTaskCreate(status_task, "status", 4096, NULL, 2, NULL);
 }

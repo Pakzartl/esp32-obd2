@@ -16,6 +16,7 @@ class Telemetry {
   final double batteryV;
   final double cvtRatio;
   final int ridingScore;
+  final int boardTemp;
 
   Telemetry({
     this.id,
@@ -34,6 +35,7 @@ class Telemetry {
     this.batteryV = 0,
     this.cvtRatio = 0,
     this.ridingScore = 0,
+    this.boardTemp = 0,
   });
 
   // Accumulated state from multiple UDS frames
@@ -49,6 +51,7 @@ class Telemetry {
   static double _batteryV = 0;
   static double _cvtRatio = 0;
   static int _ridingScore = 0;
+  static int _boardTemp = 0;
   static String _lastRawHex = '';
 
   // Parse 16-byte packed vehicle data from S3 relay (def3 characteristic)
@@ -71,6 +74,7 @@ class Telemetry {
       _cvtRatio = (data[13] | (data[14] << 8)) / 100.0;
       _ridingScore = data[15];
     }
+    if (data.length >= 17) _boardTemp = data[16] - 40;
 
     return Telemetry._current();
   }
@@ -139,6 +143,7 @@ class Telemetry {
         batteryV: _batteryV,
         cvtRatio: _cvtRatio,
         ridingScore: _ridingScore,
+        boardTemp: _boardTemp,
       );
 
   factory Telemetry.empty() => Telemetry(
@@ -152,6 +157,7 @@ class Telemetry {
         ignitionTiming: 0,
         rawBleHex: '',
         timestamp: DateTime.now(),
+        boardTemp: 0,
       );
 
   Map<String, dynamic> toMap() => {
@@ -170,6 +176,7 @@ class Telemetry {
         'fuel_rate_lph': fuelRateLph,
         'cvt_ratio': cvtRatio,
         'riding_score': ridingScore,
+        'board_temp': boardTemp,
         'timestamp': timestamp.millisecondsSinceEpoch,
         'synced': synced ? 1 : 0,
       };
@@ -188,6 +195,7 @@ class Telemetry {
         fuelRateLph: (map['fuel_rate_lph'] as num?)?.toDouble() ?? 0,
         cvtRatio: (map['cvt_ratio'] as num?)?.toDouble() ?? 0,
         ridingScore: (map['riding_score'] as int?) ?? 0,
+        boardTemp: (map['board_temp'] as int?) ?? 0,
         timestamp:
             DateTime.fromMillisecondsSinceEpoch(map['timestamp'] as int),
         synced: (map['synced'] as int) == 1,

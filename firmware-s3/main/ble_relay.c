@@ -1,5 +1,7 @@
 #include "ble_relay.h"
 #include "espnow_rx.h"
+#include "ble_ota.h"
+#include "smart_features.h"
 #include <string.h>
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -49,15 +51,21 @@ static const ble_uuid128_t fw_chr_uuid =
     BLE_UUID128_INIT(0xf7, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12,
                      0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
 
+static const ble_uuid128_t ota_chr_uuid =
+    BLE_UUID128_INIT(0xf8, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12,
+                     0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
+
 static uint16_t vd_chr_handle;
 static uint16_t mt_chr_handle;
 
 // ── Build BLE packets from relay data ──
 
-static void build_vehicle_buf(uint8_t buf[16])
+#define VD_BUF_LEN 17
+
+static void build_vehicle_buf(uint8_t buf[VD_BUF_LEN])
 {
     const relay_packet_t *p = &g_relay.pkt;
-    memset(buf, 0, 16);
+    memset(buf, 0, VD_BUF_LEN);
     if (!relay_data_fresh()) return;
 
     memcpy(&buf[0], &p->vd_flags, 2);
@@ -71,6 +79,10 @@ static void build_vehicle_buf(uint8_t buf[16])
     memcpy(&buf[11], &p->vd_fuel_rate_x100, 2);
     memcpy(&buf[13], &p->vd_cvt_x100, 2);
     buf[15] = p->vd_score;
+
+    float bt = smart_get_board_temp();
+    int enc = (int)(bt + 40.0f);
+    buf[16] = (uint8_t)(enc < 0 ? 0 : enc > 255 ? 255 : enc);
 }
 
 static void build_metrics_buf(int16_t buf[8])
@@ -95,9 +107,9 @@ static int vd_access(uint16_t conn, uint16_t attr,
                      struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
     if (ctxt->op != BLE_GATT_ACCESS_OP_READ_CHR) return 0;
-    uint8_t buf[16];
+    uint8_t buf[VD_BUF_LEN];
     build_vehicle_buf(buf);
-    os_mbuf_append(ctxt->om, buf, 16);
+    os_mbuf_append(ctxt->om, buf, VD_BUF_LEN);
     return 0;
 }
 
@@ -214,6 +226,13 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                 .access_cb = fw_access,
                 .flags = BLE_GATT_CHR_F_READ,
             },
+            {
+                .uuid = &ota_chr_uuid.u,
+                .access_cb = ble_ota_access,
+                .val_handle = &ble_ota_chr_handle,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE |
+                         BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_NOTIFY,
+            },
             { 0 },
         },
     },
@@ -308,10 +327,9 @@ static void notify_task(void *arg)
         uint16_t handle = ble_conn_handle;
         if (handle != BLE_HS_CONN_HANDLE_NONE && data_notify &&
             relay_data_fresh()) {
-            // Vehicle data
-            uint8_t vbuf[16];
+            uint8_t vbuf[VD_BUF_LEN];
             build_vehicle_buf(vbuf);
-            struct os_mbuf *om = ble_hs_mbuf_from_flat(vbuf, 16);
+            struct os_mbuf *om = ble_hs_mbuf_from_flat(vbuf, VD_BUF_LEN);
             if (om) {
                 int rc = ble_gatts_notify_custom(handle, vd_chr_handle, om);
                 if (rc != 0) {

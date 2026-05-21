@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include "esp_now.h"
 #include "esp_wifi.h"
+#include "esp_netif.h"
 #include "esp_timer.h"
 
 static const char *TAG = "ENOW";
@@ -55,21 +56,32 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
 
 esp_err_t espnow_rx_init(void)
 {
-    // WiFi must be initialized before ESP-NOW
+    esp_netif_create_default_wifi_ap();
+
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+
+    wifi_config_t ap_cfg = {
+        .ap = {
+            .ssid = "ADV350-Setup",
+            .channel = 1,
+            .max_connection = 2,
+            .authmode = WIFI_AUTH_OPEN,
+        },
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
+
     ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA,
         WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    // Lock to channel 1 (must match sender)
     ESP_ERROR_CHECK(esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE));
 
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_register_recv_cb(on_recv));
 
-    ESP_LOGI(TAG, "ESP-NOW receiver ready (ch 1)");
+    ESP_LOGI(TAG, "ESP-NOW receiver ready (ch 1), AP: ADV350-Setup");
     return ESP_OK;
 }
 

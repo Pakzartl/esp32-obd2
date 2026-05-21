@@ -41,6 +41,16 @@ class VehicleTab extends StatelessWidget {
               Icons.thermostat),
           _SensorData(
               'IAT', '${current.iat}', '°C', Colors.teal, Icons.air),
+          _SensorData(
+              'Board',
+              '${current.boardTemp}',
+              '°C',
+              current.boardTemp > 70
+                  ? Colors.red
+                  : current.boardTemp > 55
+                      ? Colors.orange
+                      : Colors.blueGrey,
+              Icons.developer_board),
         ]),
         const SizedBox(height: 20),
         _sectionHeader('Fuel & Electrical'),
