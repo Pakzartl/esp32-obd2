@@ -45,8 +45,8 @@ class OtaService {
   }
 
   bool isNewer(String remote, String current) {
-    final r = remote.split('.').map(int.parse).toList();
-    final c = current.split('.').map(int.parse).toList();
+    final r = _parseVersion(remote);
+    final c = _parseVersion(current);
     for (int i = 0; i < 3; i++) {
       final rv = i < r.length ? r[i] : 0;
       final cv = i < c.length ? c[i] : 0;
@@ -54,6 +54,11 @@ class OtaService {
       if (rv < cv) return false;
     }
     return false;
+  }
+
+  static List<int> _parseVersion(String v) {
+    final clean = v.split('-').first;
+    return clean.split('.').map((s) => int.tryParse(s) ?? 0).toList();
   }
 
   Future<Uint8List?> downloadFirmware(String url) async {

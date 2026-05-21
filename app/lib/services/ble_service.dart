@@ -12,8 +12,8 @@ class BleService {
       '12345678-1234-5678-1234-56789abcdef3';
   static const String canCtrlCharUuid =
       '12345678-1234-5678-1234-56789abcdef2';
-  static const String otaDataCharUuid =
-      '12345678-1234-5678-1234-56789abcdef6';
+  static const String otaCharUuid =
+      '12345678-1234-5678-1234-56789abcdef8';
   static const String fwVersionCharUuid =
       '12345678-1234-5678-1234-56789abcdef7';
   static const String mgmtCharUuid =
@@ -22,7 +22,7 @@ class BleService {
 
   BluetoothDevice? _device;
   BluetoothCharacteristic? _ctrlChar;
-  BluetoothCharacteristic? _otaDataChar;
+  BluetoothCharacteristic? _otaChar;
   BluetoothCharacteristic? _fwVersionChar;
   BluetoothCharacteristic? _mgmtChar;
   StreamSubscription? _subscription;
@@ -131,8 +131,8 @@ class BleService {
             }
           } else if (uuid == canCtrlCharUuid) {
             _ctrlChar = char;
-          } else if (uuid == otaDataCharUuid) {
-            _otaDataChar = char;
+          } else if (uuid == otaCharUuid) {
+            _otaChar = char;
           } else if (uuid == fwVersionCharUuid) {
             _fwVersionChar = char;
           } else if (uuid == mgmtCharUuid) {
@@ -235,16 +235,16 @@ class BleService {
   }
 
   Future<bool> startOta(int firmwareSize) async {
-    if (_ctrlChar == null) return false;
+    if (_otaChar == null) return false;
     try {
-      final sizeBytes = [
-        0x20,
+      final cmd = [
+        0x01,
         firmwareSize & 0xFF,
         (firmwareSize >> 8) & 0xFF,
         (firmwareSize >> 16) & 0xFF,
         (firmwareSize >> 24) & 0xFF,
       ];
-      await _ctrlChar!.write(sizeBytes);
+      await _otaChar!.write(cmd);
       return true;
     } catch (_) {
       return false;
@@ -252,9 +252,9 @@ class BleService {
   }
 
   Future<bool> writeOtaChunk(List<int> chunk) async {
-    if (_otaDataChar == null) return false;
+    if (_otaChar == null) return false;
     try {
-      await _otaDataChar!.write(chunk, withoutResponse: true);
+      await _otaChar!.write([0x02, ...chunk], withoutResponse: true);
       return true;
     } catch (_) {
       return false;
@@ -262,9 +262,9 @@ class BleService {
   }
 
   Future<bool> finishOta() async {
-    if (_ctrlChar == null) return false;
+    if (_otaChar == null) return false;
     try {
-      await _ctrlChar!.write([0x21]);
+      await _otaChar!.write([0x03]);
       return true;
     } catch (_) {
       return false;
@@ -272,9 +272,9 @@ class BleService {
   }
 
   Future<bool> abortOta() async {
-    if (_ctrlChar == null) return false;
+    if (_otaChar == null) return false;
     try {
-      await _ctrlChar!.write([0x22]);
+      await _otaChar!.write([0x04]);
       return true;
     } catch (_) {
       return false;
@@ -288,7 +288,7 @@ class BleService {
     await _device?.disconnect();
     _device = null;
     _ctrlChar = null;
-    _otaDataChar = null;
+    _otaChar = null;
     _fwVersionChar = null;
     _mgmtChar = null;
     _connectionController.add(false);
