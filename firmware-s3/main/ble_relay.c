@@ -3,6 +3,7 @@
 #include "ble_ota.h"
 #include "smart_features.h"
 #include "flash_logger.h"
+#include "wifi_portal.h"
 #include <string.h>
 #include "esp_timer.h"
 #include "esp_system.h"
@@ -325,7 +326,8 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status == 0) {
             ble_conn_handle = event->connect.conn_handle;
-            ESP_LOGI(TAG, "Connected");
+            ESP_LOGI(TAG, "Connected — stopping WiFi AP");
+            wifi_portal_stop();
         } else {
             ble_advertise();
         }
@@ -333,7 +335,8 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
         data_notify = false;
-        ESP_LOGI(TAG, "Disconnected (reason=%d)", event->disconnect.reason);
+        ESP_LOGI(TAG, "Disconnected (reason=%d) — starting WiFi AP", event->disconnect.reason);
+        wifi_portal_init();
         ble_advertise();
         break;
     case BLE_GAP_EVENT_SUBSCRIBE:

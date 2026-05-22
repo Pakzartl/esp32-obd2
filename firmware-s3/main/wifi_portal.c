@@ -182,6 +182,7 @@ static esp_err_t restart_handler(httpd_req_t *req)
 
 esp_err_t wifi_portal_init(void)
 {
+    if (s_server) return ESP_OK;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 8;
     config.stack_size = 4096;
