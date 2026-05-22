@@ -142,3 +142,37 @@ async function handleQuery(url: URL, env: Env): Promise<Response> {
   const result = await env.DB.prepare(query).bind(...params).all();
   return json({ rows: result.results, meta: result.meta });
 }
+
+async function handleBackfill(env: Env): Promise<Response> {
+  const rows = await env.DB.prepare(
+    `SELECT id, raw_ble_hex FROM telemetry
+     WHERE raw_ble_hex != '' AND length(raw_ble_hex) >= 32
+     AND fuel_rate_lph = 0`
+  ).all<{ id: number; raw_ble_hex: string }>();
+
+  if (!rows.results.length) return json({ backfilled: 0 });
+
+  const stmts = [];
+  for (const row of rows.results) {
+    const hex = row.raw_ble_hex;
+    try {
+      const fuelLo = parseInt(hex.substring(22, 24), 16);
+      const fuelHi = parseInt(hex.substring(24, 26), 16);
+      const cvtLo = parseInt(hex.substring(26, 28), 16);
+      const cvtHi = parseInt(hex.substring(28, 30), 16);
+      const score = hex.length >= 32 ? parseInt(hex.substring(30, 32), 16) : 0;
+      const fuelRate = (fuelLo | (fuelHi << 8)) / 100.0;
+      const cvtRatio = (cvtLo | (cvtHi << 8)) / 100.0;
+      const boardTemp = hex.length >= 34 ? parseInt(hex.substring(32, 34), 16) - 40 : 0;
+
+      stmts.push(
+        env.DB.prepare(
+          `UPDATE telemetry SET fuel_rate_lph=?, cvt_ratio=?, riding_score=?, board_temp=? WHERE id=?`
+        ).bind(fuelRate, cvtRatio, score, boardTemp, row.id)
+      );
+    } catch {}
+  }
+
+  if (stmts.length) await env.DB.batch(stmts);
+  return json({ backfilled: stmts.length });
+}
