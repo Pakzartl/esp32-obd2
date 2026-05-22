@@ -10,6 +10,10 @@ CREATE TABLE IF NOT EXISTS telemetry (
   engine_load REAL,
   ignition_timing REAL,
   raw_ble_hex TEXT,
+  fuel_rate_lph REAL DEFAULT 0,
+  cvt_ratio REAL DEFAULT 0,
+  riding_score INTEGER DEFAULT 0,
+  board_temp INTEGER DEFAULT 0,
   recorded_at TEXT NOT NULL,
   received_at TEXT NOT NULL DEFAULT (datetime('now')),
   trip_id TEXT

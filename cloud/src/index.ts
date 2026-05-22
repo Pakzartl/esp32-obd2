@@ -13,6 +13,10 @@ interface TelemetryRow {
   engine_load?: number;
   ignition_timing?: number;
   raw_ble_hex?: string;
+  fuel_rate_lph?: number;
+  cvt_ratio?: number;
+  riding_score?: number;
+  board_temp?: number;
   recorded_at: string;
   trip_id?: string;
 }
@@ -80,8 +84,8 @@ async function handleBatchInsert(request: Request, env: Env): Promise<Response> 
   }
 
   const stmt = env.DB.prepare(
-    `INSERT INTO telemetry (device_id, rpm, speed, throttle, coolant_temp, map_kpa, iat, engine_load, ignition_timing, raw_ble_hex, recorded_at, trip_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO telemetry (device_id, rpm, speed, throttle, coolant_temp, map_kpa, iat, engine_load, ignition_timing, raw_ble_hex, fuel_rate_lph, cvt_ratio, riding_score, board_temp, recorded_at, trip_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   const batch = rows.map((r) =>
@@ -96,6 +100,10 @@ async function handleBatchInsert(request: Request, env: Env): Promise<Response> 
       r.engine_load ?? null,
       r.ignition_timing ?? null,
       r.raw_ble_hex ?? null,
+      r.fuel_rate_lph ?? null,
+      r.cvt_ratio ?? null,
+      r.riding_score ?? null,
+      r.board_temp ?? null,
       r.recorded_at,
       r.trip_id ?? null
     )
