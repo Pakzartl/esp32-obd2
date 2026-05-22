@@ -18,6 +18,7 @@ typedef struct __attribute__((packed)) {
     uint16_t fuel_rate_x100;
     int8_t   stft;
     uint8_t  score;
+    uint8_t  board_temp_enc;
 } log_record_t;
 
 typedef struct {

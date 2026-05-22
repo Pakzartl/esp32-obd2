@@ -1,4 +1,5 @@
 #include "flash_logger.h"
+#include "smart_features.h"
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -69,6 +70,7 @@ esp_err_t flash_logger_write(const relay_packet_t *pkt, uint16_t trip_id)
         .fuel_rate_x100 = pkt->vd_fuel_rate_x100,
         .stft           = pkt->vd_stft,
         .score          = pkt->vd_score,
+        .board_temp_enc = (uint8_t)(smart_get_board_temp() + 40),
     };
 
     FILE *f = fopen(LOG_FILE, "ab");

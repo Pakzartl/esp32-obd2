@@ -7,6 +7,7 @@
 #include "esp_netif.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
+#include "esp_ota_ops.h"
 #include "espnow_rx.h"
 #include "ble_relay.h"
 #include "smart_features.h"
@@ -29,7 +30,7 @@ static void status_task(void *arg)
             const relay_packet_t *p = &g_relay.pkt;
             smart_features_update(p);
 
-            if (g_trip.state == TRIP_ACTIVE) {
+            if (g_trip.state == TRIP_ACTIVE && !ble_is_connected()) {
                 flash_logger_write(p, (uint16_t)g_trip.trip_count);
             }
 
@@ -94,6 +95,8 @@ void app_main(void)
         .mode = GPIO_MODE_OUTPUT,
     };
     gpio_config(&led_cfg);
+
+    esp_ota_mark_app_valid_cancel_rollback();
 
     ESP_LOGI(TAG, "=== ADV350 BLE Relay (ESP32-S3) %s ===", FW_VERSION_S3);
     ESP_LOGI(TAG, "Free heap: %lu", (unsigned long)esp_get_free_heap_size());

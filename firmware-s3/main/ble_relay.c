@@ -440,6 +440,11 @@ static void notify_task(void *arg)
     }
 }
 
+bool ble_is_connected(void)
+{
+    return ble_conn_handle != BLE_HS_CONN_HANDLE_NONE;
+}
+
 // ── Init ──
 
 void ble_relay_init(void)
