@@ -16,6 +16,16 @@
 
 static const char *TAG = "RELAY";
 
+static led_color_t connection_led_color(bool fresh)
+{
+    if (ble_is_connected()) {
+        return LED_GREEN;
+    }
+    if (fresh || g_relay.peer_known) {
+        return LED_ORANGE;
+    }
+    return LED_RED;
+}
 
 static void status_task(void *arg)
 {
@@ -32,11 +42,7 @@ static void status_task(void *arg)
                 flash_logger_write(p, (uint16_t)g_trip.trip_count);
             }
 
-            if (g_alerts.any_active) {
-                status_led_set((tick % 2) ? LED_RED : LED_OFF);
-            } else {
-                status_led_set(ble_is_connected() ? LED_GREEN : LED_ORANGE);
-            }
+            status_led_set(connection_led_color(fresh));
 
             ESP_LOGI(TAG, "seq=%d RPM=%d SPD=%d CLT=%d THR=%d fuel=%.2f stft=%d lam=%d trip=%s",
                      p->seq,
@@ -49,7 +55,7 @@ static void status_task(void *arg)
                      p->vd_lambda_x1000,
                      g_trip.state == TRIP_ACTIVE ? "ACTIVE" : "idle");
         } else {
-            status_led_set(ble_is_connected() ? LED_GREEN : LED_RED);
+            status_led_set(connection_led_color(fresh));
         }
 
         tick++;
