@@ -318,19 +318,6 @@ Firmware (ESP32 OBD2) switches behavior via NVS `mode` key:
   - `/update` — POST multipart firmware binary (used by curl OTA)
 - **PROD**: BLE only, WiFi off, optimized for app connection
 
-### WiFi OTA Flash (ESP32 OBD2 board)
-```bash
-# Board must be in DEV mode (WiFi enabled)
-# Build firmware
-cd firmware && idf.py build
-
-# OTA flash via WiFi (board at adv350.local)
-curl -X POST -F "firmware=@build/can_sniffer.bin" http://adv350.local/update
-
-# Board reboots automatically after successful OTA
-# Verify: ping adv350.local (should respond after ~5s)
-```
-
 ### S3 Relay WiFi Portal
 - **AP SSID**: ADV350-Setup (WPA2)
 - **URL**: `http://192.168.4.1`
@@ -340,55 +327,27 @@ curl -X POST -F "firmware=@build/can_sniffer.bin" http://adv350.local/update
 
 ## Useful Commands
 
-### Firmware (ESP32 OBD2)
 ```bash
+# ESP-IDF environment (run once per terminal)
 export IDF_PATH=$HOME/esp/esp-idf && . $IDF_PATH/export.sh
 
-cd firmware && idf.py build
-idf.py -p /dev/cu.usbserial-10 flash monitor    # USB flash + monitor
-idf.py -p /dev/cu.usbserial-10 monitor           # Monitor only
+# Monitor serial output (no flash)
+idf.py -p /dev/cu.usbserial-10 monitor       # ESP32 OBD2
+idf.py -p /dev/cu.usbmodem1101 monitor        # ESP32-S3 Relay
 
-# WiFi OTA (DEV mode, board at adv350.local)
-curl -X POST -F "firmware=@build/can_sniffer.bin" http://adv350.local/update
-```
-
-### Firmware (ESP32-S3 Relay)
-```bash
-cd firmware-s3 && idf.py build
-idf.py -p /dev/cu.usbmodem1101 flash monitor     # USB flash + monitor
-
-# Bootloader mode: hold BOOT + press RESET + release BOOT
-```
-
-### Flutter App
-```bash
-cd app
-flutter pub get
-flutter run                    # Debug
-flutter build apk --release    # Release APK
-```
-
-### Cloudflare Worker
-```bash
-cd cloud
-bun install
-bun run dev                    # Local dev
-bun run deploy                 # Deploy to Cloudflare
-bun run db:migrate             # Apply schema to D1
-
-# Query firmware table
-bunx wrangler d1 execute adv350-telemetry --remote \
-  --command "SELECT * FROM firmware ORDER BY id DESC LIMIT 5"
-```
-
-### Debugging
-```bash
 # Find USB device
 find /dev -name "cu.usb*" -maxdepth 1
 
-# Manual reset to bootloader
-# Hold BOOT, press RESET, release BOOT
+# Manual reset to bootloader: hold BOOT + press RESET + release BOOT
+
+# Flutter dev
+cd app && flutter pub get && flutter run
+
+# Cloudflare Worker dev
+cd cloud && bun install && bun run dev
 ```
+
+Build, flash, release commands → see **Release Workflow** section below
 
 ---
 
@@ -440,40 +399,241 @@ find /dev -name "cu.usb*" -maxdepth 1
 
 ---
 
-## Firmware Release Workflow
+## Release Workflow
 
-### Release Checklist
+โปรเจคนี้มี 3 component ที่ release แยกกัน:
 
-- [ ] `cd firmware-s3 && idf.py build` — build S3 firmware
-- [ ] Flash S3 via USB and verify serial output: `idf.py -p PORT flash monitor`
-- [ ] Test app BLE connection + data flow (vehicle data, reconnect)
-- [ ] `git add` + `git commit` with changelog (bug fixes, new features)
-- [ ] `git tag v0.X.Y`
-- [ ] `git push origin dev --tags`
-- [ ] `gh release create v0.X.Y --title "vX.Y — description" --notes "changelog"`
-- [ ] `gh release upload v0.X.Y firmware-s3/build/adv350-s3-relay.bin`
-- [ ] Register in D1: `cd cloud && bunx wrangler d1 execute adv350-telemetry --remote --command "INSERT INTO firmware (version, changelog, download_url, size) VALUES ('0.X.Y', 'changelog', 'https://github.com/Pakzartl/esp32-obd2/releases/download/v0.X.Y/adv350-s3-relay.bin', SIZE)"`
-- [ ] Verify: `GET /api/firmware/latest` returns new version
+| Component | Repo | Versioning | Delivery |
+|-----------|------|------------|----------|
+| firmware-s3 (BLE Relay) | Pakzartl/esp32-obd2 | git tag → `FW_VERSION_S3` | BLE OTA via app |
+| firmware (ESP32 OBD2) | Pakzartl/esp32-obd2 | git tag → `FW_VERSION` | WiFi OTA (`curl`) |
+| app (Flutter) | Pakzartl/obd2-flutter | pubspec.yaml version | APK sideload / in-app self-update |
 
-### Commands Reference
+### How Versioning Works
+
+Firmware version ดึงจาก git tag อัตโนมัติผ่าน CMake:
+```
+git describe --tags --always --dirty  →  "0.2.4" (strip "v" prefix)
+```
+- Tag `v0.2.4` → firmware reports `0.2.4-relay`
+- ไม่มี tag → fallback `0.0.0`
+- Override ได้: `idf.py build -DFORCE_FW_VER=0.2.4`
+
+### How App Discovers New Firmware
+
+```
+App → GET /api/firmware/latest?component=firmware-s3
+    → Cloudflare Worker → D1 query: SELECT ... FROM firmware WHERE component=? ORDER BY id DESC LIMIT 1
+    → Returns: { version, changelog, download_url, size }
+    → App compares with current board version → prompt user to update via BLE OTA
+```
+
+ไม่ต้อง redeploy Worker — แค่ INSERT row ใหม่ใน D1 `firmware` table
+
+---
+
+### Release: firmware-s3 (BLE Relay)
+
+ใช้บ่อยที่สุด เพราะ S3 เป็น board ที่ user เห็นผ่าน app
+
+#### Step 1 — Commit + Tag (ก่อน build!)
 
 ```bash
-# Build
+git add -A
+git commit -m "feat: short description of changes"
+git tag v0.X.Y
+```
+
+Tag format: `v{major}.{minor}.{patch}` เช่น `v0.2.5`
+
+**สำคัญ**: ต้อง tag ก่อน build เพราะ CMake ใช้ `git describe --tags` ดึง version
+ถ้า build ก่อน tag → binary จะได้ version เก่า เช่น `0.2.3-1-g3aa7dd4-relay` แทนที่จะเป็น `0.2.4-relay`
+
+#### Step 2 — Build
+
+```bash
+export IDF_PATH=$HOME/esp/esp-idf && . $IDF_PATH/export.sh
 cd firmware-s3 && idf.py build
+```
 
-# Flash + verify
-idf.py -p /dev/cu.usbmodem101 flash monitor
+Output binary: `firmware-s3/build/adv350-s3-relay.bin`
+ยืนยัน version ใน build log: `Firmware version: 0.X.Y-relay`
 
-# GitHub release
-gh release create v0.X.Y --title "vX.Y — description" --notes "changelog"
-gh release upload v0.X.Y firmware-s3/build/adv350-s3-relay.bin
+#### Step 3 — Push + GitHub Release
 
-# D1 register (no worker redeploy needed)
+```bash
+git push origin dev --tags
+```
+
+```bash
+# Get binary size
+BIN_SIZE=$(stat -f%z firmware-s3/build/adv350-s3-relay.bin)
+
+# Get SHA256
+SHA256=$(shasum -a 256 firmware-s3/build/adv350-s3-relay.bin | cut -d' ' -f1)
+
+# Create release + upload binary
+gh release create v0.X.Y \
+  --repo Pakzartl/esp32-obd2 \
+  --title "v0.X.Y — short description" \
+  --notes "$(cat <<'EOF'
+- Change 1
+- Change 2
+
+Binary: adv350-s3-relay.bin
+Size: SIZE bytes
+SHA256: HASH
+EOF
+)" \
+  firmware-s3/build/adv350-s3-relay.bin
+```
+
+#### Step 5 — Register in D1
+
+```bash
 cd cloud && bunx wrangler d1 execute adv350-telemetry --remote \
-  --command "INSERT INTO firmware (version, changelog, download_url, size) \
-  VALUES ('0.X.Y', 'changelog', 'https://github.com/Pakzartl/esp32-obd2/releases/download/v0.X.Y/adv350-s3-relay.bin', SIZE)"
+  --command "INSERT INTO firmware (component, version, changelog, download_url, size) \
+  VALUES ( \
+    'firmware-s3', \
+    '0.X.Y', \
+    'Short changelog', \
+    'https://github.com/Pakzartl/esp32-obd2/releases/download/v0.X.Y/adv350-s3-relay.bin', \
+    BIN_SIZE \
+  )"
+```
 
-# App auto-detects new version via GET /api/firmware/latest
+D1 `firmware` table schema:
+```
+id INTEGER PRIMARY KEY AUTOINCREMENT
+component TEXT (default: 'firmware-s3')
+version TEXT
+changelog TEXT
+download_url TEXT
+size INTEGER
+created_at TEXT (auto)
+```
+
+#### Step 6 — Verify + OTA
+
+```bash
+# API returns new version
+curl -s https://adv350-api.pakzartl.workers.dev/api/firmware/latest?component=firmware-s3 | jq .
+
+# Expected: { "component": "firmware-s3", "version": "0.X.Y", ... }
+```
+
+1. เปิด app → System screen → ดู "New firmware available" ขึ้น
+2. กด Update → app download .bin จาก GitHub → ส่งผ่าน BLE OTA (char 0xf8)
+3. Board reboot อัตโนมัติ → app reconnect → ดู version ใหม่ใน System screen
+4. Board จะ mark OTA valid อัตโนมัติ — ถ้าไม่ mark จะ rollback กลับ version เดิม
+
+---
+
+### Release: firmware (ESP32 OBD2)
+
+Board CAN/UDS ตัวหลัก — release น้อยกว่า S3, update ผ่าน WiFi OTA
+
+#### Step 1 — Build + OTA Flash
+
+```bash
+export IDF_PATH=$HOME/esp/esp-idf && . $IDF_PATH/export.sh
+cd firmware && idf.py build
+
+# WiFi OTA (Board ต้องอยู่ DEV mode, WiFi enabled)
+curl -X POST -F "firmware=@build/can_sniffer.bin" http://adv350.local/update
+# Board reboots อัตโนมัติ — ping adv350.local รอจนตอบ (~5s)
+```
+
+#### Step 2 — GitHub Release (ถ้าจะ publish)
+
+```bash
+gh release create v0.X.Y \
+  --repo Pakzartl/esp32-obd2 \
+  --title "v0.X.Y — OBD2 firmware description" \
+  --notes "changelog" \
+  firmware/build/can_sniffer.bin
+```
+
+Register ใน D1 ด้วย `component='firmware'`:
+```bash
+cd cloud && bunx wrangler d1 execute adv350-telemetry --remote \
+  --command "INSERT INTO firmware (component, version, changelog, download_url, size) \
+  VALUES ('firmware', '0.X.Y', 'changelog', 'URL', SIZE)"
+```
+
+---
+
+### Release: Flutter App
+
+App อยู่ repo แยก: `Pakzartl/obd2-flutter`
+
+```bash
+cd app
+flutter build apk --release
+# Output: build/app/outputs/flutter-apk/app-release.apk
+```
+
+App มี in-app self-update — ตรวจ GitHub releases ของ repo ตัวเอง
+
+---
+
+### Cloudflare Worker (cloud/)
+
+Worker ไม่ต้อง deploy ทุกครั้งที่ release firmware — แค่ INSERT row ใน D1
+
+Deploy เฉพาะเมื่อเปลี่ยน Worker code:
+```bash
+cd cloud
+bun install
+bun run deploy
+```
+
+Schema migration:
+```bash
+bunx wrangler d1 execute adv350-telemetry --remote --file schema.sql
+```
+
+Query firmware table:
+```bash
+bunx wrangler d1 execute adv350-telemetry --remote \
+  --command "SELECT * FROM firmware ORDER BY id DESC LIMIT 5"
+```
+
+---
+
+### Quick Reference: S3 Release (copy-paste)
+
+```bash
+# 1. Commit + tag (ก่อน build!)
+git add -A && git commit -m "feat: description"
+git tag v0.X.Y
+
+# 2. Build (หลัง tag — ให้ git describe ได้ version ถูก)
+export IDF_PATH=$HOME/esp/esp-idf && . $IDF_PATH/export.sh
+cd firmware-s3 && idf.py build
+# ดู build log: "Firmware version: 0.X.Y-relay"
+
+# 3. Push + GitHub release
+git push origin dev --tags
+gh release create v0.X.Y \
+  --repo Pakzartl/esp32-obd2 \
+  --title "v0.X.Y — description" \
+  --notes "changelog" \
+  firmware-s3/build/adv350-s3-relay.bin
+
+# 4. Register in D1
+BIN_SIZE=$(stat -f%z firmware-s3/build/adv350-s3-relay.bin)
+cd cloud && bunx wrangler d1 execute adv350-telemetry --remote \
+  --command "INSERT INTO firmware (component,version,changelog,download_url,size) \
+  VALUES ('firmware-s3','0.X.Y','changelog','https://github.com/Pakzartl/esp32-obd2/releases/download/v0.X.Y/adv350-s3-relay.bin',$BIN_SIZE)"
+
+# 5. Verify API
+curl -s "https://adv350-api.pakzartl.workers.dev/api/firmware/latest" | jq .
+
+# 6. OTA via app → System screen → Update firmware
+
+# 6. Verify
+curl -s https://adv350-api.pakzartl.workers.dev/api/firmware/latest | jq .
 ```
 
 ---
