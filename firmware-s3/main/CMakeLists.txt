@@ -1,14 +1,18 @@
-execute_process(
-    COMMAND git describe --tags --always --dirty
-    WORKING_DIRECTORY ${COMPONENT_DIR}/../..
-    OUTPUT_VARIABLE GIT_VER
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET
-)
-if(NOT GIT_VER)
-    set(GIT_VER "0.0.0")
+if(DEFINED FORCE_FW_VER)
+    set(GIT_VER "${FORCE_FW_VER}")
+else()
+    execute_process(
+        COMMAND git describe --tags --always --dirty
+        WORKING_DIRECTORY ${COMPONENT_DIR}/../..
+        OUTPUT_VARIABLE GIT_VER
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if(NOT GIT_VER)
+        set(GIT_VER "0.0.0")
+    endif()
+    string(REGEX REPLACE "^v" "" GIT_VER "${GIT_VER}")
 endif()
-string(REGEX REPLACE "^v" "" GIT_VER "${GIT_VER}")
 message(STATUS "Firmware version: ${GIT_VER}-relay")
 
 idf_component_register(
