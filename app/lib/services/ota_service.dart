@@ -53,7 +53,7 @@ class OtaService {
       if (rv > cv) return true;
       if (rv < cv) return false;
     }
-    return remote != current;
+    return false;
   }
 
   static List<int> _parseVersion(String v) {
