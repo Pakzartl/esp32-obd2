@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS telemetry (
   cvt_ratio REAL DEFAULT 0,
   riding_score INTEGER DEFAULT 0,
   board_temp INTEGER DEFAULT 0,
+  distance_m REAL DEFAULT 0,
   recorded_at TEXT NOT NULL,
   received_at TEXT NOT NULL DEFAULT (datetime('now')),
   trip_id TEXT
