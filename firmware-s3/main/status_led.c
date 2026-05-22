@@ -4,7 +4,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 
-#define LED_GPIO   38
+#define LED_GPIO   48
 #define BRIGHTNESS 16
 
 static led_strip_handle_t s_strip = NULL;
