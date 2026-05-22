@@ -4,6 +4,7 @@
 #include "smart_features.h"
 #include "flash_logger.h"
 #include "wifi_portal.h"
+#include "driver/gpio.h"
 #include <string.h>
 #include "esp_timer.h"
 #include "esp_system.h"
