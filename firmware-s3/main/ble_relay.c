@@ -175,6 +175,16 @@ static int ctrl_access(uint16_t conn, uint16_t attr,
         data_notify = true;
         ESP_LOGI(TAG, "Notify ON");
         break;
+    case 0x02: {
+        ESP_LOGI(TAG, "Ping — blink LED");
+        for (int i = 0; i < 3; i++) {
+            gpio_set_level(GPIO_NUM_2, 1);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            gpio_set_level(GPIO_NUM_2, 0);
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        break;
+    }
     case 0x10: case 0x11: case 0x12: case 0x13:
         ESP_LOGI(TAG, "Forward cmd 0x%02X to CAN board", val);
         relay_send_cmd(val);
