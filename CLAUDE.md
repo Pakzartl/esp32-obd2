@@ -442,22 +442,40 @@ find /dev -name "cu.usb*" -maxdepth 1
 
 ## Firmware Release Workflow
 
+### Release Checklist
+
+- [ ] `cd firmware-s3 && idf.py build` — build S3 firmware
+- [ ] Flash S3 via USB and verify serial output: `idf.py -p PORT flash monitor`
+- [ ] Test app BLE connection + data flow (vehicle data, reconnect)
+- [ ] `git add` + `git commit` with changelog (bug fixes, new features)
+- [ ] `git tag v0.X.Y`
+- [ ] `git push origin dev --tags`
+- [ ] `gh release create v0.X.Y --title "vX.Y — description" --notes "changelog"`
+- [ ] `gh release upload v0.X.Y firmware-s3/build/adv350-s3-relay.bin`
+- [ ] Register in D1: `cd cloud && bunx wrangler d1 execute adv350-telemetry --remote --command "INSERT INTO firmware (version, changelog, download_url, size) VALUES ('0.X.Y', 'changelog', 'https://github.com/Pakzartl/esp32-obd2/releases/download/v0.X.Y/adv350-s3-relay.bin', SIZE)"`
+- [ ] Verify: `GET /api/firmware/latest` returns new version
+
+### Commands Reference
+
 ```bash
-# 1. Build firmware
+# Build
 cd firmware-s3 && idf.py build
 
-# 2. Create GitHub release with binary
-gh release create v0.X.Y build/adv350-s3-relay.bin \
-  -R Pakzartl/esp32-obd2 --title "vX.Y — description"
+# Flash + verify
+idf.py -p /dev/cu.usbmodem101 flash monitor
 
-# 3. Register version in D1 (no worker redeploy needed)
+# GitHub release
+gh release create v0.X.Y --title "vX.Y — description" --notes "changelog"
+gh release upload v0.X.Y firmware-s3/build/adv350-s3-relay.bin
+
+# D1 register (no worker redeploy needed)
 cd cloud && bunx wrangler d1 execute adv350-telemetry --remote \
   --command "INSERT INTO firmware (version, changelog, download_url, size) \
   VALUES ('0.X.Y', 'changelog', 'https://github.com/Pakzartl/esp32-obd2/releases/download/v0.X.Y/adv350-s3-relay.bin', SIZE)"
 
-# 4. App auto-detects new version via GET /api/firmware/latest
+# App auto-detects new version via GET /api/firmware/latest
 ```
 
 ---
 
-*Last updated: 2026-05-21*
+*Last updated: 2026-05-22*
