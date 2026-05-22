@@ -1,5 +1,7 @@
 # ADV350 OBD Logger
 
+**Latest: v0.1.0** | [Release](https://github.com/Pakzartl/esp32-obd2/releases/latest)
+
 Open-source real-time OBD-II data logger for **Honda ADV350 (Euro 5)**. Reads CAN bus via UDS protocol, relays through ESP32-S3 over BLE to a Flutter dashboard app, with cloud sync to Cloudflare D1.
 
 ```
