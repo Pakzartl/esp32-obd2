@@ -28,6 +28,8 @@ class BleService {
   StreamSubscription? _subscription;
   StreamSubscription? _connStateSub;
   bool _autoReconnect = true;
+  bool _isReconnecting = false;
+  DateTime? _lastScanTime;
   final _telemetryController = StreamController<Telemetry>.broadcast();
   final _rawDataController = StreamController<List<int>>.broadcast();
   final _connectionController = StreamController<bool>.broadcast();
@@ -56,6 +58,14 @@ class BleService {
 
   Future<List<ScanResult>> scan(
       {Duration timeout = const Duration(seconds: 5)}) async {
+    // Throttle: Android allows max 5 scans / 30s
+    final now = DateTime.now();
+    if (_lastScanTime != null &&
+        now.difference(_lastScanTime!) < const Duration(seconds: 6)) {
+      return [];
+    }
+    _lastScanTime = now;
+
     final results = <ScanResult>[];
 
     final sub = FlutterBluePlus.scanResults.listen((r) {
@@ -78,17 +88,13 @@ class BleService {
   }
 
   Future<void> connect(BluetoothDevice device) async {
-    await device.connect(
-      license: License.free,
-      autoConnect: false,
-      mtu: 23,
-      timeout: const Duration(seconds: 10),
-    );
-    _device = device;
-    _autoReconnect = true;
-    _connectionController.add(true);
-    _saveDevice(device.remoteId.str);
+    // Bug fix: clean stale GATT handle from previous session
+    if (device.isConnected) {
+      await device.disconnect();
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
 
+    // Bug fix: set up listener BEFORE connect() so we don't miss events
     _connStateSub?.cancel();
     _connStateSub = device.connectionState.listen((state) {
       if (state == BluetoothConnectionState.disconnected) {
@@ -102,6 +108,17 @@ class BleService {
         }
       }
     });
+
+    await device.connect(
+      license: License.free,
+      autoConnect: false,
+      mtu: 23,
+      timeout: const Duration(seconds: 10),
+    );
+    _device = device;
+    _autoReconnect = true;
+    _connectionController.add(true);
+    _saveDevice(device.remoteId.str);
 
     final services = await device.discoverServices();
     for (final service in services) {
@@ -169,15 +186,34 @@ class BleService {
   }
 
   Future<void> _tryReconnect(BluetoothDevice device) async {
-    for (int i = 0; i < 3; i++) {
-      if (!_autoReconnect || _device != null) return;
-      await Future.delayed(Duration(seconds: 3 + i * 2));
+    if (_isReconnecting) return;
+    _isReconnecting = true;
+    try {
+      // Bug 4: check if OS already has a connection (app restart case)
       try {
-        final results = await scan(timeout: const Duration(seconds: 3));
-        if (results.isEmpty || !_autoReconnect) continue;
-        await connect(results.first.device);
-        return;
+        final systemDevices = await FlutterBluePlus.systemDevices([]);
+        final existing = systemDevices.where(
+            (d) => d.remoteId.str == device.remoteId.str);
+        if (existing.isNotEmpty) {
+          await connect(existing.first);
+          return;
+        }
       } catch (_) {}
+
+      for (int i = 0; i < 3; i++) {
+        if (!_autoReconnect || _device != null) return;
+        await Future.delayed(Duration(seconds: 5 + i * 5));
+        try {
+          try { await device.disconnect(); } catch (_) {}
+          await Future.delayed(const Duration(milliseconds: 500));
+          final results = await scan(timeout: const Duration(seconds: 4));
+          if (results.isEmpty || !_autoReconnect) continue;
+          await connect(results.first.device);
+          return;
+        } catch (_) {}
+      }
+    } finally {
+      _isReconnecting = false;
     }
   }
 

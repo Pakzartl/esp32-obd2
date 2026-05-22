@@ -67,7 +67,7 @@ static uint16_t mt_chr_handle;
 
 // ── Build BLE packets from relay data ──
 
-#define VD_BUF_LEN 17
+#define VD_BUF_LEN 23
 
 static void build_vehicle_buf(uint8_t buf[VD_BUF_LEN])
 {
@@ -90,6 +90,12 @@ static void build_vehicle_buf(uint8_t buf[VD_BUF_LEN])
     float bt = smart_get_board_temp();
     int enc = (int)(bt + 40.0f);
     buf[16] = (uint8_t)(enc < 0 ? 0 : enc > 255 ? 255 : enc);
+
+    buf[17] = p->vd_engine_load_enc;
+    buf[18] = (uint8_t)p->vd_ign_timing;
+    buf[19] = (uint8_t)p->vd_stft;
+    memcpy(&buf[20], &p->vd_lambda_x1000, 2);
+    buf[22] = p->vd_is_braking;
 }
 
 static void build_metrics_buf(int16_t buf[8])

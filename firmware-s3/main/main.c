@@ -40,12 +40,15 @@ static void status_task(void *arg)
                 led_on = !led_on;
             }
 
-            ESP_LOGI(TAG, "seq=%d RPM=%d SPD=%d CLT=%d THR=%d trip=%s",
+            ESP_LOGI(TAG, "seq=%d RPM=%d SPD=%d CLT=%d THR=%d fuel=%.2f stft=%d lam=%d trip=%s",
                      p->seq,
                      (p->vd_flags & RF_RPM) ? p->vd_rpm : 0,
                      (p->vd_flags & RF_SPEED) ? p->vd_speed : 0,
                      (p->vd_flags & RF_COOLANT) ? p->vd_coolant_enc - 40 : -99,
                      (p->vd_flags & RF_THROTTLE) ? (p->vd_throttle_enc * 100 / 255) : -1,
+                     p->vd_fuel_rate_x100 / 100.0f,
+                     p->vd_stft,
+                     p->vd_lambda_x1000,
                      g_trip.state == TRIP_ACTIVE ? "ACTIVE" : "idle");
         } else {
             gpio_set_level(LED_GPIO, led_on ? 0 : 1);

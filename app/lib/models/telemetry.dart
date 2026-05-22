@@ -17,6 +17,9 @@ class Telemetry {
   final double cvtRatio;
   final int ridingScore;
   final int boardTemp;
+  final int stft;
+  final int lambda;
+  final bool isBraking;
 
   Telemetry({
     this.id,
@@ -36,6 +39,9 @@ class Telemetry {
     this.cvtRatio = 0,
     this.ridingScore = 0,
     this.boardTemp = 0,
+    this.stft = 0,
+    this.lambda = 0,
+    this.isBraking = false,
   });
 
   // Accumulated state from multiple UDS frames
@@ -52,6 +58,9 @@ class Telemetry {
   static double _cvtRatio = 0;
   static int _ridingScore = 0;
   static int _boardTemp = 0;
+  static int _stft = 0;
+  static int _lambda = 0;
+  static bool _isBraking = false;
   static String _lastRawHex = '';
 
   // Parse 16-byte packed vehicle data from S3 relay (def3 characteristic)
@@ -75,6 +84,13 @@ class Telemetry {
       _ridingScore = data[15];
     }
     if (data.length >= 17) _boardTemp = data[16] - 40;
+    if (data.length >= 23) {
+      _engineLoad = (data[17] * 100 / 255).round();
+      _ignitionTiming = data[18].toSigned(8);
+      _stft = data[19].toSigned(8);
+      _lambda = data[20] | (data[21] << 8);
+      _isBraking = data[22] == 1;
+    }
 
     return Telemetry._current();
   }
@@ -144,6 +160,9 @@ class Telemetry {
         cvtRatio: _cvtRatio,
         ridingScore: _ridingScore,
         boardTemp: _boardTemp,
+        stft: _stft,
+        lambda: _lambda,
+        isBraking: _isBraking,
       );
 
   factory Telemetry.empty() => Telemetry(
@@ -158,6 +177,9 @@ class Telemetry {
         rawBleHex: '',
         timestamp: DateTime.now(),
         boardTemp: 0,
+        stft: 0,
+        lambda: 0,
+        isBraking: false,
       );
 
   Map<String, dynamic> toMap() => {

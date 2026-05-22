@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../models/telemetry.dart';
 import '../../services/database_service.dart';
@@ -15,32 +16,85 @@ class _TripTabState extends State<TripTab> {
   final _db = DatabaseService();
   List<Telemetry> _data = [];
   bool _loading = true;
+  bool _loadInProgress = false;
   String _range = '30';
+  String? _prevRange;
   DateTime? _customStart;
   DateTime? _customEnd;
+  Timer? _refreshTimer;
+
+  double? _selStartFrac;
+  double? _selEndFrac;
+  bool _isDragging = false;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _refreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      if (_range != 'all' && _range != 'custom' && !_loadInProgress) {
+        _load(silent: true);
+      }
+    });
   }
 
-  Future<void> _load() async {
-    setState(() => _loading = true);
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _load({bool silent = false}) async {
+    if (_loadInProgress) return;
+    _loadInProgress = true;
+    if (!silent && mounted) setState(() => _loading = true);
     final all = await _db.getRecent(limit: 10000);
     var decoded = all.where((t) => t.rpm < 20000).toList();
 
     if (_range == 'custom' && _customStart != null && _customEnd != null) {
-      decoded = decoded.where((t) =>
-          t.timestamp.isAfter(_customStart!) &&
-          t.timestamp.isBefore(_customEnd!)).toList();
+      decoded = decoded
+          .where((t) =>
+              t.timestamp.isAfter(_customStart!) &&
+              t.timestamp.isBefore(_customEnd!))
+          .toList();
     } else if (_range != 'all') {
       final mins = int.tryParse(_range) ?? 9999;
       final cutoff = DateTime.now().subtract(Duration(minutes: mins));
       decoded = decoded.where((t) => t.timestamp.isAfter(cutoff)).toList();
     }
     _data = decoded.reversed.toList();
-    setState(() => _loading = false);
+    _loadInProgress = false;
+    if (mounted) setState(() => _loading = false);
+  }
+
+  void _applySelection() {
+    if (_data.isEmpty || _selStartFrac == null || _selEndFrac == null) return;
+    final lo = _selStartFrac! < _selEndFrac! ? _selStartFrac! : _selEndFrac!;
+    final hi = _selStartFrac! > _selEndFrac! ? _selStartFrac! : _selEndFrac!;
+    if ((hi - lo) < 0.02) return;
+
+    final tMin = _data.first.timestamp.millisecondsSinceEpoch;
+    final tMax = _data.last.timestamp.millisecondsSinceEpoch;
+    final tRange = tMax - tMin;
+    if (tRange == 0) return;
+
+    _prevRange ??= _range;
+    _customStart = DateTime.fromMillisecondsSinceEpoch((tMin + lo * tRange).round());
+    _customEnd = DateTime.fromMillisecondsSinceEpoch((tMin + hi * tRange).round());
+    _range = 'custom';
+    _selStartFrac = null;
+    _selEndFrac = null;
+    _load();
+  }
+
+  void _resetZoom() {
+    _range = _prevRange ?? '30';
+    _prevRange = null;
+    _customStart = null;
+    _customEnd = null;
+    _selStartFrac = null;
+    _selEndFrac = null;
+    _load();
   }
 
   Future<void> _pickDateTimeRange() async {
@@ -56,9 +110,7 @@ class _TripTabState extends State<TripTab> {
       builder: (context, child) => Theme(
         data: Theme.of(context).copyWith(
           colorScheme: ColorScheme.dark(
-            primary: Colors.blue,
-            surface: Colors.grey[900]!,
-          ),
+              primary: Colors.blue, surface: Colors.grey[900]!),
         ),
         child: child!,
       ),
@@ -67,14 +119,12 @@ class _TripTabState extends State<TripTab> {
 
     final startTime = await showTimePicker(
       context: context,
-      initialTime: TimeOfDay.fromDateTime(
-          _customStart ?? dateRange.start),
+      initialTime:
+          TimeOfDay.fromDateTime(_customStart ?? dateRange.start),
       builder: (context, child) => Theme(
         data: Theme.of(context).copyWith(
           colorScheme: ColorScheme.dark(
-            primary: Colors.blue,
-            surface: Colors.grey[900]!,
-          ),
+              primary: Colors.blue, surface: Colors.grey[900]!),
         ),
         child: child!,
       ),
@@ -83,14 +133,11 @@ class _TripTabState extends State<TripTab> {
 
     final endTime = await showTimePicker(
       context: context,
-      initialTime: TimeOfDay.fromDateTime(
-          _customEnd ?? dateRange.end),
+      initialTime: TimeOfDay.fromDateTime(_customEnd ?? dateRange.end),
       builder: (context, child) => Theme(
         data: Theme.of(context).copyWith(
           colorScheme: ColorScheme.dark(
-            primary: Colors.blue,
-            surface: Colors.grey[900]!,
-          ),
+              primary: Colors.blue, surface: Colors.grey[900]!),
         ),
         child: child!,
       ),
@@ -106,6 +153,7 @@ class _TripTabState extends State<TripTab> {
       endTime.hour, endTime.minute,
     );
     _range = 'custom';
+    _prevRange = null;
     _load();
   }
 
@@ -116,43 +164,29 @@ class _TripTabState extends State<TripTab> {
         : ListView(
             padding: const EdgeInsets.all(16),
             children: [
-              // Time range chips
               _buildRangeChips(),
               const SizedBox(height: 16),
-              // Trip summary cards
               _buildTripSummary(),
               const SizedBox(height: 16),
-              // Sensor stats
               if (_data.isNotEmpty) ...[
-                _sensorCard('Speed', 'km/h',
-                    _data.map((t) => t.speed.toDouble()).toList(), Colors.blue),
-                _sensorCard('RPM', '',
-                    _data.map((t) => t.rpm.toDouble()).toList(), Colors.orange),
-                _sensorCard(
-                    'Throttle',
-                    '%',
-                    _data.map((t) => t.throttle.toDouble()).toList(),
-                    Colors.green),
-                _sensorCard(
-                    'Coolant',
-                    '°C',
-                    _data.map((t) => t.coolantTemp.toDouble()).toList(),
-                    Colors.red),
-                _sensorCard('MAP', 'kPa',
-                    _data.map((t) => t.mapKpa.toDouble()).toList(),
-                    Colors.purple),
-                _sensorCard('IAT', '°C',
-                    _data.map((t) => t.iat.toDouble()).toList(),
-                    Colors.teal),
-                _sensorCard('Fuel Rate (est.)', 'L/h',
-                    _data.map((t) => t.fuelRateLph).toList(),
-                    Colors.orange),
-                _sensorCard('CVT Ratio', '',
-                    _data.map((t) => t.cvtRatio).toList(),
-                    Colors.indigo),
-                _sensorCard('Ride Score', '/100',
-                    _data.map((t) => t.ridingScore.toDouble()).toList(),
-                    Colors.greenAccent),
+                _sensorCard('Speed', 'km/h', _data,
+                    (t) => t.speed.toDouble(), Colors.blue),
+                _sensorCard('RPM', '', _data,
+                    (t) => t.rpm.toDouble(), Colors.orange),
+                _sensorCard('Throttle', '%', _data,
+                    (t) => t.throttle.toDouble(), Colors.green),
+                _sensorCard('Coolant', '°C', _data,
+                    (t) => t.coolantTemp.toDouble(), Colors.red),
+                _sensorCard('MAP', 'kPa', _data,
+                    (t) => t.mapKpa.toDouble(), Colors.purple),
+                _sensorCard('IAT', '°C', _data,
+                    (t) => t.iat.toDouble(), Colors.teal),
+                _sensorCard('Fuel Rate', 'L/h', _data,
+                    (t) => t.fuelRateLph, Colors.orange),
+                _sensorCard('CVT Ratio', '', _data,
+                    (t) => t.cvtRatio, Colors.indigo),
+                _sensorCard('Ride Score', '/100', _data,
+                    (t) => t.ridingScore.toDouble(), Colors.greenAccent),
               ],
               if (_data.isEmpty)
                 Padding(
@@ -161,7 +195,8 @@ class _TripTabState extends State<TripTab> {
                     child: Text(
                       'No trip data yet\nConnect and ride to see stats',
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.grey[600], fontSize: 15),
+                      style:
+                          TextStyle(color: Colors.grey[600], fontSize: 15),
                     ),
                   ),
                 ),
@@ -192,6 +227,15 @@ class _TripTabState extends State<TripTab> {
             _chip('24h', '1440'),
             _chip('All', 'all'),
             _chipCustom(),
+            if (_prevRange != null)
+              ActionChip(
+                avatar: const Icon(Icons.zoom_out, size: 14, color: Colors.white),
+                label: const Text('Reset zoom',
+                    style: TextStyle(fontSize: 12, color: Colors.white)),
+                backgroundColor: Colors.red[700],
+                onPressed: _resetZoom,
+                visualDensity: VisualDensity.compact,
+              ),
           ],
         ),
         if (rangeLabel.isNotEmpty)
@@ -203,7 +247,7 @@ class _TripTabState extends State<TripTab> {
         Padding(
           padding: const EdgeInsets.only(top: 4),
           child: Text(
-            '${_data.length} pts',
+            '${_data.length} pts  •  drag on graph to zoom',
             style: TextStyle(color: Colors.grey[600], fontSize: 11),
           ),
         ),
@@ -223,6 +267,7 @@ class _TripTabState extends State<TripTab> {
       backgroundColor: Colors.grey[800],
       onSelected: (_) {
         _range = value;
+        _prevRange = null;
         _load();
       },
       visualDensity: VisualDensity.compact,
@@ -230,7 +275,7 @@ class _TripTabState extends State<TripTab> {
   }
 
   Widget _chipCustom() {
-    final selected = _range == 'custom';
+    final selected = _range == 'custom' && _prevRange == null;
     return ChoiceChip(
       avatar: Icon(Icons.date_range,
           size: 14, color: selected ? Colors.white : Colors.grey[500]),
@@ -255,21 +300,17 @@ class _TripTabState extends State<TripTab> {
     final mins = dur.inMinutes;
     final secs = dur.inSeconds % 60;
 
-    // Calculate trip metrics
     final speeds = _data.map((t) => t.speed.toDouble()).toList();
     final avgSpeed =
         speeds.isEmpty ? 0.0 : speeds.reduce((a, b) => a + b) / speeds.length;
     final maxSpeed =
         speeds.isEmpty ? 0.0 : speeds.reduce((a, b) => a > b ? a : b);
 
-    // Estimate trip distance (speed samples * interval)
-    // Each sample ~1 second apart, speed in km/h -> km/3600
     double distKm = 0;
     for (final s in speeds) {
       distKm += s / 3600;
     }
 
-    // Riding score: based on smooth throttle transitions
     final throttles = _data.map((t) => t.throttle.toDouble()).toList();
     double smoothness = 100;
     if (throttles.length > 1) {
@@ -283,73 +324,29 @@ class _TripTabState extends State<TripTab> {
 
     return Column(
       children: [
-        // Duration + distance row
-        Row(
-          children: [
-            Expanded(
-              child: _summaryCard(
-                Icons.timer_outlined,
-                'Duration',
-                '${mins}m ${secs}s',
-                Colors.blue,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _summaryCard(
-                Icons.route,
-                'Distance',
-                '${distKm.toStringAsFixed(1)} km',
-                Colors.green,
-              ),
-            ),
-          ],
-        ),
+        Row(children: [
+          Expanded(child: _summaryCard(Icons.timer_outlined, 'Duration',
+              '${mins}m ${secs}s', Colors.blue)),
+          const SizedBox(width: 12),
+          Expanded(child: _summaryCard(Icons.route, 'Distance',
+              '${distKm.toStringAsFixed(1)} km', Colors.green)),
+        ]),
         const SizedBox(height: 12),
-        // Speed + score row
-        Row(
-          children: [
-            Expanded(
-              child: _summaryCard(
-                Icons.speed,
-                'Avg Speed',
-                '${avgSpeed.round()} km/h',
-                Colors.cyan,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _summaryCard(
-                Icons.star_outline,
-                'Ride Score',
-                '${smoothness.round()}',
-                _scoreColor(smoothness),
-              ),
-            ),
-          ],
-        ),
+        Row(children: [
+          Expanded(child: _summaryCard(Icons.speed, 'Avg Speed',
+              '${avgSpeed.round()} km/h', Colors.cyan)),
+          const SizedBox(width: 12),
+          Expanded(child: _summaryCard(Icons.star_outline, 'Ride Score',
+              '${smoothness.round()}', _scoreColor(smoothness))),
+        ]),
         const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: _summaryCard(
-                Icons.trending_up,
-                'Max Speed',
-                '${maxSpeed.round()} km/h',
-                Colors.orange,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _summaryCard(
-                Icons.data_usage,
-                'Samples',
-                '${_data.length}',
-                Colors.purple,
-              ),
-            ),
-          ],
-        ),
+        Row(children: [
+          Expanded(child: _summaryCard(Icons.trending_up, 'Max Speed',
+              '${maxSpeed.round()} km/h', Colors.orange)),
+          const SizedBox(width: 12),
+          Expanded(child: _summaryCard(Icons.data_usage, 'Samples',
+              '${_data.length}', Colors.purple)),
+        ]),
       ],
     );
   }
@@ -372,32 +369,29 @@ class _TripTabState extends State<TripTab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Icon(icon, color: color.withValues(alpha: 0.7), size: 16),
-              const SizedBox(width: 6),
-              Text(label,
-                  style: TextStyle(color: Colors.grey[500], fontSize: 11)),
-            ],
-          ),
+          Row(children: [
+            Icon(icon, color: color.withValues(alpha: 0.7), size: 16),
+            const SizedBox(width: 6),
+            Text(label,
+                style: TextStyle(color: Colors.grey[500], fontSize: 11)),
+          ]),
           const SizedBox(height: 8),
-          Text(
-            value,
-            style: TextStyle(
-              color: color,
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-              fontFamily: 'monospace',
-            ),
-          ),
+          Text(value,
+              style: TextStyle(
+                  color: color, fontSize: 20,
+                  fontWeight: FontWeight.bold, fontFamily: 'monospace')),
         ],
       ),
     );
   }
 
-  Widget _sensorCard(
-      String name, String unit, List<double> values, Color color) {
-    if (values.isEmpty) return const SizedBox.shrink();
+  Widget _sensorCard(String name, String unit, List<Telemetry> data,
+      double Function(Telemetry) getValue, Color color) {
+    if (data.isEmpty) return const SizedBox.shrink();
+
+    final values = data.map(getValue).toList();
+    final timestamps =
+        data.map((t) => t.timestamp.millisecondsSinceEpoch).toList();
 
     final nonZero = values.where((v) => v != 0).toList();
     final max = values.reduce((a, b) => a > b ? a : b);
@@ -405,13 +399,15 @@ class _TripTabState extends State<TripTab> {
         nonZero.isEmpty ? 0.0 : nonZero.reduce((a, b) => a < b ? a : b);
     final avg = values.reduce((a, b) => a + b) / values.length;
 
-    // Downsample for sparkline: take evenly spaced points, max 200
     List<double> spark;
-    if (values.length > 200) {
-      final step = values.length / 200;
-      spark = List.generate(200, (i) => values[(i * step).floor()]);
+    List<int> sparkTs;
+    if (values.length > 300) {
+      final step = values.length / 300;
+      spark = List.generate(300, (i) => values[(i * step).floor()]);
+      sparkTs = List.generate(300, (i) => timestamps[(i * step).floor()]);
     } else {
       spark = values;
+      sparkTs = timestamps;
     }
 
     return Padding(
@@ -425,36 +421,55 @@ class _TripTabState extends State<TripTab> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Text(name,
-                    style: TextStyle(
-                        color: color,
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold)),
-                if (unit.isNotEmpty)
-                  Text(' $unit',
-                      style:
-                          TextStyle(color: Colors.grey[600], fontSize: 11)),
-                const Spacer(),
-                Text('now: ${values.last.round()}',
-                    style: TextStyle(color: color, fontSize: 13)),
-              ],
-            ),
+            Row(children: [
+              Text(name,
+                  style: TextStyle(
+                      color: color, fontSize: 14, fontWeight: FontWeight.bold)),
+              if (unit.isNotEmpty)
+                Text(' $unit',
+                    style: TextStyle(color: Colors.grey[600], fontSize: 11)),
+              const Spacer(),
+              Text('now: ${values.last.round()}',
+                  style: TextStyle(color: color, fontSize: 13)),
+            ]),
             const SizedBox(height: 10),
-            Row(
-              children: [
-                _statBox('MAX', max, color),
-                _statBox('AVG', avg, Colors.white54),
-                _statBox('MIN', min, Colors.white38),
-              ],
-            ),
+            Row(children: [
+              _statBox('MAX', max, color),
+              _statBox('AVG', avg, Colors.white54),
+              _statBox('MIN', min, Colors.white38),
+            ]),
             const SizedBox(height: 8),
-            SizedBox(
-              height: 30,
-              child: CustomPaint(
-                size: const Size(double.infinity, 30),
-                painter: _SparkPainter(spark, color),
+            GestureDetector(
+              onHorizontalDragStart: (d) {
+                final frac = (d.localPosition.dx /
+                        context.findRenderObject()!.paintBounds.width)
+                    .clamp(0.0, 1.0);
+                setState(() {
+                  _isDragging = true;
+                  _selStartFrac = frac;
+                  _selEndFrac = frac;
+                });
+              },
+              onHorizontalDragUpdate: (d) {
+                final box = context.findRenderObject() as RenderBox;
+                final frac =
+                    (d.localPosition.dx / box.size.width).clamp(0.0, 1.0);
+                setState(() => _selEndFrac = frac);
+              },
+              onHorizontalDragEnd: (_) {
+                _isDragging = false;
+                _applySelection();
+              },
+              child: SizedBox(
+                height: 50,
+                child: CustomPaint(
+                  size: const Size(double.infinity, 50),
+                  painter: _SparkPainter(
+                    spark, sparkTs, color,
+                    selStart: _isDragging ? _selStartFrac : null,
+                    selEnd: _isDragging ? _selEndFrac : null,
+                  ),
+                ),
               ),
             ),
           ],
@@ -465,48 +480,92 @@ class _TripTabState extends State<TripTab> {
 
   Widget _statBox(String label, double value, Color color) {
     return Expanded(
-      child: Column(
-        children: [
-          Text(label,
-              style: const TextStyle(color: Colors.white24, fontSize: 9)),
-          Text('${value.round()}',
-              style: TextStyle(
-                  color: color,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  fontFamily: 'monospace')),
-        ],
-      ),
+      child: Column(children: [
+        Text(label,
+            style: const TextStyle(color: Colors.white24, fontSize: 9)),
+        Text('${value.round()}',
+            style: TextStyle(
+                color: color, fontSize: 16,
+                fontWeight: FontWeight.bold, fontFamily: 'monospace')),
+      ]),
     );
   }
 }
 
 class _SparkPainter extends CustomPainter {
   final List<double> values;
+  final List<int> timestamps;
   final Color color;
+  final double? selStart;
+  final double? selEnd;
+  static const int gapMs = 10000;
 
-  _SparkPainter(this.values, this.color);
+  _SparkPainter(this.values, this.timestamps, this.color,
+      {this.selStart, this.selEnd});
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (values.length < 2) return;
+    if (values.length < 2 || timestamps.length != values.length) return;
 
-    final max = values.reduce((a, b) => a > b ? a : b);
-    final min = values.reduce((a, b) => a < b ? a : b);
-    final range = max - min;
-    if (range == 0) return;
+    final vMax = values.reduce((a, b) => a > b ? a : b);
+    final vMin = values.reduce((a, b) => a < b ? a : b);
+    final vRange = vMax - vMin == 0 ? 1.0 : vMax - vMin;
 
+    final tMin = timestamps.first;
+    final tMax = timestamps.last;
+    final tRange = tMax - tMin;
+    if (tRange == 0) return;
+
+    double toX(int ts) => (ts - tMin) / tRange * size.width;
+    double toY(double v) =>
+        size.height - ((v - vMin) / vRange).clamp(0, 1) * size.height;
+    final baseline = toY(vMin);
+
+    // Selection highlight
+    if (selStart != null && selEnd != null) {
+      final lo = selStart! < selEnd! ? selStart! : selEnd!;
+      final hi = selStart! > selEnd! ? selStart! : selEnd!;
+      canvas.drawRect(
+        Rect.fromLTRB(
+            lo * size.width, 0, hi * size.width, size.height),
+        Paint()..color = Colors.blue.withValues(alpha: 0.2),
+      );
+      canvas.drawLine(
+        Offset(lo * size.width, 0),
+        Offset(lo * size.width, size.height),
+        Paint()
+          ..color = Colors.blue.withValues(alpha: 0.6)
+          ..strokeWidth = 1,
+      );
+      canvas.drawLine(
+        Offset(hi * size.width, 0),
+        Offset(hi * size.width, size.height),
+        Paint()
+          ..color = Colors.blue.withValues(alpha: 0.6)
+          ..strokeWidth = 1,
+      );
+    }
+
+    // Data line
     final paint = Paint()
       ..color = color.withValues(alpha: 0.6)
       ..strokeWidth = 1.5
       ..style = PaintingStyle.stroke;
 
     final path = Path();
+    bool first = true;
     for (int i = 0; i < values.length; i++) {
-      final x = i / (values.length - 1) * size.width;
-      final y = size.height - ((values[i] - min) / range) * size.height;
-      if (i == 0) {
+      final x = toX(timestamps[i]);
+      final y = toY(values[i]);
+
+      if (first) {
         path.moveTo(x, y);
+        first = false;
+      } else if (timestamps[i] - timestamps[i - 1] > gapMs) {
+        final xPrev = toX(timestamps[i - 1]);
+        path.lineTo(xPrev, baseline);
+        path.lineTo(x, baseline);
+        path.lineTo(x, y);
       } else {
         path.lineTo(x, y);
       }

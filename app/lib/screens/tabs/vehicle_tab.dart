@@ -65,8 +65,32 @@ class VehicleTab extends StatelessWidget {
               '',
               Colors.green,
               Icons.eco),
+          _SensorData(
+              'STFT',
+              '${current.stft}',
+              '%',
+              current.stft > 5
+                  ? Colors.red
+                  : current.stft < -5
+                      ? Colors.blue
+                      : Colors.green,
+              Icons.tune),
+          _SensorData(
+              'Lambda',
+              current.lambda > 0
+                  ? (current.lambda / 1000.0).toStringAsFixed(3)
+                  : '--',
+              '',
+              Colors.amber,
+              Icons.air),
           _SensorData('CVT Ratio', current.cvtRatio.toStringAsFixed(2), '',
               Colors.indigo, Icons.settings),
+          _SensorData(
+              'Engine Load',
+              '${current.engineLoad}',
+              '%',
+              Colors.deepOrange,
+              Icons.speed),
         ]),
         const SizedBox(height: 20),
         _sectionHeader('Ride Quality'),
