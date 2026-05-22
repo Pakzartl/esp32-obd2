@@ -5,8 +5,9 @@ import '../../services/database_service.dart';
 
 class TripTab extends StatefulWidget {
   final Telemetry current;
+  final bool isActive;
 
-  const TripTab({super.key, required this.current});
+  const TripTab({super.key, required this.current, this.isActive = true});
 
   @override
   State<TripTab> createState() => _TripTabState();
@@ -22,6 +23,8 @@ class _TripTabState extends State<TripTab> {
   DateTime? _customStart;
   DateTime? _customEnd;
   Timer? _refreshTimer;
+  DateTime? _lastTimestamp;
+  int _dataVersion = 0;
 
   double? _selStartFrac;
   double? _selEndFrac;
@@ -31,8 +34,8 @@ class _TripTabState extends State<TripTab> {
   void initState() {
     super.initState();
     _load();
-    _refreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      if (_range != 'all' && _range != 'custom' && !_loadInProgress) {
+    _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (widget.isActive && _range != 'all' && _range != 'custom' && !_loadInProgress) {
         _load(silent: true);
       }
     });
@@ -47,8 +50,30 @@ class _TripTabState extends State<TripTab> {
   Future<void> _load({bool silent = false}) async {
     if (_loadInProgress) return;
     _loadInProgress = true;
+
+    // Incremental: only fetch new rows if we have data and it's a silent refresh
+    if (silent && _data.isNotEmpty && _lastTimestamp != null) {
+      final newRows = await _db.getAfter(_lastTimestamp!);
+      if (newRows.isEmpty) {
+        // Trim old rows outside range window
+        _trimOldData();
+        _loadInProgress = false;
+        return;
+      }
+      final filtered = newRows.where((t) => t.rpm < 20000).toList();
+      _data.addAll(filtered);
+      _trimOldData();
+      if (_data.isNotEmpty) _lastTimestamp = _data.last.timestamp;
+      _dataVersion++;
+      _loadInProgress = false;
+      if (mounted) setState(() {});
+      return;
+    }
+
+    // Full load: first load, range change, zoom
     if (!silent && mounted) setState(() => _loading = true);
-    final all = await _db.getRecent(limit: 10000);
+    final limit = _range == 'all' ? 10000 : 2000;
+    final all = await _db.getRecentForTrip(limit: limit);
     var decoded = all.where((t) => t.rpm < 20000).toList();
 
     if (_range == 'custom' && _customStart != null && _customEnd != null) {
@@ -63,8 +88,21 @@ class _TripTabState extends State<TripTab> {
       decoded = decoded.where((t) => t.timestamp.isAfter(cutoff)).toList();
     }
     _data = decoded.reversed.toList();
+    _lastTimestamp = _data.isNotEmpty ? _data.last.timestamp : null;
+    _dataVersion++;
     _loadInProgress = false;
     if (mounted) setState(() => _loading = false);
+  }
+
+  void _trimOldData() {
+    if (_range == 'all') {
+      if (_data.length > 10000) _data = _data.sublist(_data.length - 10000);
+      return;
+    }
+    if (_range == 'custom') return;
+    final mins = int.tryParse(_range) ?? 9999;
+    final cutoff = DateTime.now().subtract(Duration(minutes: mins));
+    _data.removeWhere((t) => t.timestamp.isBefore(cutoff));
   }
 
   void _applySelection() {
@@ -307,8 +345,11 @@ class _TripTabState extends State<TripTab> {
         speeds.isEmpty ? 0.0 : speeds.reduce((a, b) => a > b ? a : b);
 
     double distKm = 0;
-    for (final s in speeds) {
-      distKm += s / 3600;
+    for (int i = 1; i < _data.length; i++) {
+      final dtSec = _data[i].timestamp.difference(_data[i - 1].timestamp).inMilliseconds / 1000.0;
+      if (dtSec > 0 && dtSec < 10) {
+        distKm += _data[i].speed * dtSec / 3600;
+      }
     }
 
     final throttles = _data.map((t) => t.throttle.toDouble()).toList();
@@ -465,7 +506,7 @@ class _TripTabState extends State<TripTab> {
                 child: CustomPaint(
                   size: const Size(double.infinity, 50),
                   painter: _SparkPainter(
-                    spark, sparkTs, color,
+                    spark, sparkTs, color, _dataVersion,
                     selStart: _isDragging ? _selStartFrac : null,
                     selEnd: _isDragging ? _selEndFrac : null,
                   ),
@@ -496,11 +537,12 @@ class _SparkPainter extends CustomPainter {
   final List<double> values;
   final List<int> timestamps;
   final Color color;
+  final int dataVersion;
   final double? selStart;
   final double? selEnd;
   static const int gapMs = 10000;
 
-  _SparkPainter(this.values, this.timestamps, this.color,
+  _SparkPainter(this.values, this.timestamps, this.color, this.dataVersion,
       {this.selStart, this.selEnd});
 
   @override
@@ -574,5 +616,9 @@ class _SparkPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+  @override
+  bool shouldRepaint(covariant _SparkPainter old) =>
+      dataVersion != old.dataVersion ||
+      selStart != old.selStart ||
+      selEnd != old.selEnd;
 }

@@ -16,7 +16,7 @@ class RawBackupService {
       await backupDir.create(recursive: true);
     }
     final now = DateTime.now();
-    final filename = '${now.year}${_p(now.month)}${_p(now.day)}_${_p(now.hour)}${_p(now.minute)}${_p(now.second)}.jsonl';
+    final filename = '${now.year}-${_p(now.month)}-${_p(now.day)}.jsonl';
     _currentPath = '${backupDir.path}/$filename';
     _sink = File(_currentPath!).openWrite(mode: FileMode.append);
     _count = 0;

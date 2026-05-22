@@ -88,22 +88,25 @@ class BleService {
   }
 
   Future<void> connect(BluetoothDevice device) async {
-    // Bug fix: clean stale GATT handle from previous session
+    _autoReconnect = false;
+
     if (device.isConnected) {
       await device.disconnect();
       await Future.delayed(const Duration(milliseconds: 300));
     }
 
-    // Bug fix: set up listener BEFORE connect() so we don't miss events
     _connStateSub?.cancel();
     _connStateSub = device.connectionState.listen((state) {
       if (state == BluetoothConnectionState.disconnected) {
+        final wasConnected = _device != null;
         _device = null;
         _ctrlChar = null;
         _subscription?.cancel();
         _subscription = null;
-        _connectionController.add(false);
-        if (_autoReconnect) {
+        if (wasConnected) {
+          _connectionController.add(false);
+        }
+        if (_autoReconnect && wasConnected) {
           _tryReconnect(device);
         }
       }
@@ -203,6 +206,7 @@ class BleService {
       for (int i = 0; i < 3; i++) {
         if (!_autoReconnect || _device != null) return;
         await Future.delayed(Duration(seconds: 5 + i * 5));
+        if (!_autoReconnect || _device != null) return;
         try {
           try { await device.disconnect(); } catch (_) {}
           await Future.delayed(const Duration(milliseconds: 500));

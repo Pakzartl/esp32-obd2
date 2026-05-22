@@ -35,6 +35,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   StreamSubscription? _rawSub;
   StreamSubscription? _connectionSub;
   DateTime? _lastSave;
+  DateTime? _lastUiUpdate;
 
   @override
   void initState() {
@@ -59,13 +60,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     _rawSub = widget.bleService.rawDataStream.listen((data) {
       _rawBackup.writeRaw(data);
-      setState(() => _rawCount = _rawBackup.count);
+      _rawCount = _rawBackup.count;
     });
 
     _telemetrySub = widget.bleService.telemetryStream.listen((t) {
-      setState(() => _current = t);
+      _current = t;
       final now = DateTime.now();
-      if (_lastSave == null || now.difference(_lastSave!).inMilliseconds >= 1000) {
+      // Throttle UI to ~4Hz
+      if (_lastUiUpdate == null || now.difference(_lastUiUpdate!).inMilliseconds >= 250) {
+        _lastUiUpdate = now;
+        setState(() {});
+      }
+      // Save at 2Hz
+      if (_lastSave == null || now.difference(_lastSave!).inMilliseconds >= 500) {
         if (t.rpm > 0 || t.speed > 0 || t.coolantTemp > 0) {
           _db.insertTelemetry(t);
           _savedCount++;
@@ -74,7 +81,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
     });
     _connectionSub = widget.bleService.connectionStream.listen((connected) {
-      setState(() => _bleState = connected ? BleState.connected : BleState.disconnected);
+      setState(() => _bleState = connected
+          ? BleState.connected
+          : (_bleState == BleState.connected ? BleState.disconnected : _bleState));
       if (connected) {
         widget.bleService.startLiveNotify();
       } else if (mounted) {
@@ -107,7 +116,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               current: _current,
               bleState: _bleState,
             ),
-            TripTab(current: _current),
+            TripTab(current: _current, isActive: _tabIndex == 1),
             VehicleTab(current: _current),
             DevTab(
               bleService: widget.bleService,

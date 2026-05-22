@@ -14,7 +14,7 @@ class DatabaseService {
     final path = join(await getDatabasesPath(), 'adv350.db');
     return openDatabase(
       path,
-      version: 7,
+      version: 8,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE telemetry (
@@ -38,6 +38,7 @@ class DatabaseService {
             synced INTEGER NOT NULL DEFAULT 0
           )
         ''');
+        await db.execute('CREATE INDEX idx_telemetry_timestamp ON telemetry(timestamp)');
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -137,6 +138,9 @@ class DatabaseService {
         if (oldVersion < 7) {
           await db.execute('ALTER TABLE telemetry ADD COLUMN board_temp INTEGER NOT NULL DEFAULT 0');
         }
+        if (oldVersion < 8) {
+          await db.execute('CREATE INDEX IF NOT EXISTS idx_telemetry_timestamp ON telemetry(timestamp)');
+        }
       },
     );
   }
@@ -177,10 +181,45 @@ class DatabaseService {
     return maps.map(Telemetry.fromMap).toList();
   }
 
+  static const _tripColumns = [
+    'id', 'rpm', 'speed', 'throttle', 'coolant_temp', 'map_kpa', 'iat',
+    'engine_load', 'ignition_timing', 'fuel_rate_lph', 'cvt_ratio',
+    'riding_score', 'board_temp', 'timestamp', 'synced',
+  ];
+
+  Future<List<Telemetry>> getRecentForTrip({int limit = 2000}) async {
+    final db = await database;
+    final maps = await db.query(
+      'telemetry',
+      columns: _tripColumns,
+      orderBy: 'timestamp DESC',
+      limit: limit,
+    );
+    return maps.map(Telemetry.fromMap).toList();
+  }
+
+  Future<List<Telemetry>> getAfter(DateTime since, {int limit = 500}) async {
+    final db = await database;
+    final maps = await db.query(
+      'telemetry',
+      columns: _tripColumns,
+      where: 'timestamp > ?',
+      whereArgs: [since.millisecondsSinceEpoch],
+      orderBy: 'timestamp ASC',
+      limit: limit,
+    );
+    return maps.map(Telemetry.fromMap).toList();
+  }
+
   Future<int> getUnsyncedCount() async {
     final db = await database;
     final result =
         await db.rawQuery('SELECT COUNT(*) as cnt FROM telemetry WHERE synced = 0');
     return result.first['cnt'] as int;
+  }
+
+  Future<int> deleteSynced() async {
+    final db = await database;
+    return db.delete('telemetry', where: 'synced = 1');
   }
 }
