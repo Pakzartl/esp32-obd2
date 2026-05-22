@@ -38,7 +38,7 @@ export default {
     }
 
     if (url.pathname === "/api/firmware/latest" && request.method === "GET") {
-      return handleFirmwareLatest(env);
+      return handleFirmwareLatest(env, url);
     }
 
     if (!authorize(request, env)) {
@@ -57,10 +57,11 @@ export default {
   },
 };
 
-async function handleFirmwareLatest(env: Env): Promise<Response> {
+async function handleFirmwareLatest(env: Env, url?: URL): Promise<Response> {
+  const component = url?.searchParams.get("component") ?? "firmware-s3";
   const row = await env.DB.prepare(
-    "SELECT version, changelog, download_url, size FROM firmware ORDER BY id DESC LIMIT 1"
-  ).first<{ version: string; changelog: string; download_url: string; size: number }>();
+    "SELECT component, version, changelog, download_url, size FROM firmware WHERE component = ? ORDER BY id DESC LIMIT 1"
+  ).bind(component).first<{ component: string; version: string; changelog: string; download_url: string; size: number }>();
   if (!row) return json({ error: "no firmware release found" }, 404);
   return json(row);
 }

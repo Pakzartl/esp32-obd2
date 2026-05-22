@@ -16,3 +16,5 @@ cloud/node_modules/
 .wrangler/
 ψ/
 backups/
+app/
+firmware-s3/sdkconfig.old
