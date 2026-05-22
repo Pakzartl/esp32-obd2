@@ -6,8 +6,8 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
-#include "driver/gpio.h"
 #include "esp_ota_ops.h"
+#include "status_led.h"
 #include "espnow_rx.h"
 #include "ble_relay.h"
 #include "smart_features.h"
@@ -16,11 +16,9 @@
 
 static const char *TAG = "RELAY";
 
-#define LED_GPIO  GPIO_NUM_2
 
 static void status_task(void *arg)
 {
-    bool led_on = false;
     uint32_t tick = 0;
 
     while (1) {
@@ -35,10 +33,9 @@ static void status_task(void *arg)
             }
 
             if (g_alerts.any_active) {
-                gpio_set_level(LED_GPIO, (tick % 2) ? 0 : 1);
+                status_led_set((tick % 2) ? LED_RED : LED_OFF);
             } else {
-                gpio_set_level(LED_GPIO, led_on ? 0 : 1);
-                led_on = !led_on;
+                status_led_set(ble_is_connected() ? LED_GREEN : LED_ORANGE);
             }
 
             ESP_LOGI(TAG, "seq=%d RPM=%d SPD=%d CLT=%d THR=%d fuel=%.2f stft=%d lam=%d trip=%s",
@@ -52,8 +49,7 @@ static void status_task(void *arg)
                      p->vd_lambda_x1000,
                      g_trip.state == TRIP_ACTIVE ? "ACTIVE" : "idle");
         } else {
-            gpio_set_level(LED_GPIO, led_on ? 0 : 1);
-            led_on = !led_on;
+            status_led_set(ble_is_connected() ? LED_GREEN : LED_RED);
         }
 
         tick++;
@@ -90,17 +86,13 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    gpio_config_t led_cfg = {
-        .pin_bit_mask = (1ULL << LED_GPIO),
-        .mode = GPIO_MODE_OUTPUT,
-    };
-    gpio_config(&led_cfg);
-
     esp_ota_mark_app_valid_cancel_rollback();
 
     ESP_LOGI(TAG, "=== ADV350 BLE Relay (ESP32-S3) %s ===", FW_VERSION_S3);
     ESP_LOGI(TAG, "Free heap: %lu", (unsigned long)esp_get_free_heap_size());
 
+    status_led_init();
+    status_led_set(LED_RED);
     smart_features_init();
     flash_logger_init();
     espnow_rx_init();

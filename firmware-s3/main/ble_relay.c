@@ -4,7 +4,7 @@
 #include "smart_features.h"
 #include "flash_logger.h"
 #include "wifi_portal.h"
-#include "driver/gpio.h"
+#include "status_led.h"
 #include <string.h>
 #include "esp_timer.h"
 #include "esp_system.h"
@@ -176,16 +176,10 @@ static int ctrl_access(uint16_t conn, uint16_t attr,
         data_notify = true;
         ESP_LOGI(TAG, "Notify ON");
         break;
-    case 0x02: {
+    case 0x02:
         ESP_LOGI(TAG, "Ping — blink LED");
-        for (int i = 0; i < 3; i++) {
-            gpio_set_level(GPIO_NUM_2, 1);
-            vTaskDelay(pdMS_TO_TICKS(100));
-            gpio_set_level(GPIO_NUM_2, 0);
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
+        status_led_blink(LED_GREEN, 3, 150);
         break;
-    }
     case 0x10: case 0x11: case 0x12: case 0x13:
         ESP_LOGI(TAG, "Forward cmd 0x%02X to CAN board", val);
         relay_send_cmd(val);
