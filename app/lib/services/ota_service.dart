@@ -28,7 +28,7 @@ class FirmwareInfo {
 
 class OtaService {
   static const String _apiBase = 'https://adv350.pakzartl.xyz';
-  static const int _chunkSize = 480;
+  static const int _chunkSize = 240;
 
   final BleService _ble;
 
@@ -53,7 +53,7 @@ class OtaService {
       if (rv > cv) return true;
       if (rv < cv) return false;
     }
-    return false;
+    return remote != current;
   }
 
   static List<int> _parseVersion(String v) {
@@ -75,6 +75,8 @@ class OtaService {
     Uint8List firmware,
     void Function(double progress) onProgress,
   ) async {
+    await _ble.abortOta();
+    await Future.delayed(const Duration(milliseconds: 300));
     final ok = await _ble.startOta(firmware.length);
     if (!ok) return false;
 

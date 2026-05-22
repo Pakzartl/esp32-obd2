@@ -309,37 +309,55 @@ ota_1,     app,  ota_1,    0x1E0000,  0x1C0000   (1.75 MB)
 
 ## NVS Modes
 
-Firmware switches behavior via NVS `mode` key:
-- **DEV**: WiFi enabled, HTTP debug server at `http://esp32-obd2.local`
+Firmware (ESP32 OBD2) switches behavior via NVS `mode` key:
+- **DEV**: WiFi enabled, HTTP server at `http://adv350.local`
   - `/api/frames` — live CAN frames + TWAI status
   - `/api/scan?range=xx&go=1` — DID brute-force scanner
   - `/log` — CAN log viewer with live JS polling
+  - `/ota` — firmware update page (browse .bin file)
+  - `/update` — POST multipart firmware binary (used by curl OTA)
 - **PROD**: BLE only, WiFi off, optimized for app connection
+
+### WiFi OTA Flash (ESP32 OBD2 board)
+```bash
+# Board must be in DEV mode (WiFi enabled)
+# Build firmware
+cd firmware && idf.py build
+
+# OTA flash via WiFi (board at adv350.local)
+curl -X POST -F "firmware=@build/can_sniffer.bin" http://adv350.local/update
+
+# Board reboots automatically after successful OTA
+# Verify: ping adv350.local (should respond after ~5s)
+```
+
+### S3 Relay WiFi Portal
+- **AP SSID**: ADV350-Setup (WPA2)
+- **URL**: `http://192.168.4.1`
+- Status dashboard, logger stats, config, restart
 
 ---
 
 ## Useful Commands
 
-### Firmware
+### Firmware (ESP32 OBD2)
 ```bash
-# Setup ESP-IDF environment
-export IDF_PATH=$HOME/esp/esp-idf
-. $IDF_PATH/export.sh
+export IDF_PATH=$HOME/esp/esp-idf && . $IDF_PATH/export.sh
 
-# Build
-cd poc-can-sniffer && idf.py build
+cd firmware && idf.py build
+idf.py -p /dev/cu.usbserial-10 flash monitor    # USB flash + monitor
+idf.py -p /dev/cu.usbserial-10 monitor           # Monitor only
 
-# Flash + monitor
-idf.py -p /dev/cu.usbserial-10 flash monitor
+# WiFi OTA (DEV mode, board at adv350.local)
+curl -X POST -F "firmware=@build/can_sniffer.bin" http://adv350.local/update
+```
 
-# Monitor only
-idf.py -p /dev/cu.usbserial-10 monitor
+### Firmware (ESP32-S3 Relay)
+```bash
+cd firmware-s3 && idf.py build
+idf.py -p /dev/cu.usbmodem1101 flash monitor     # USB flash + monitor
 
-# Erase flash (factory reset)
-idf.py -p /dev/cu.usbserial-10 erase-flash
-
-# OTA via HTTP (when WiFi mode)
-idf.py -p /dev/cu.usbserial-10 ota --port 8070
+# Bootloader mode: hold BOOT + press RESET + release BOOT
 ```
 
 ### Flutter App

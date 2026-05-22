@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/ble_service.dart';
 import '../services/ota_service.dart';
@@ -13,6 +14,7 @@ class OtaScreen extends StatefulWidget {
 
 class _OtaScreenState extends State<OtaScreen> {
   late final OtaService _otaService;
+  StreamSubscription? _connSub;
   String? _currentVersion;
   FirmwareInfo? _latestFirmware;
   bool _checking = true;
@@ -21,12 +23,27 @@ class _OtaScreenState extends State<OtaScreen> {
   double _progress = 0;
   String? _error;
   String _status = 'Checking for updates...';
+  bool _otaWasComplete = false;
 
   @override
   void initState() {
     super.initState();
     _otaService = OtaService(widget.bleService);
     _checkUpdate();
+    _connSub = widget.bleService.connectionStream.listen((connected) {
+      if (connected && _otaWasComplete) {
+        _otaWasComplete = false;
+        Future.delayed(const Duration(seconds: 2), () {
+          if (mounted) _checkUpdate();
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _connSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _checkUpdate() async {
@@ -84,6 +101,7 @@ class _OtaScreenState extends State<OtaScreen> {
     });
 
     if (ok) {
+      _otaWasComplete = true;
       setState(() {
         _updating = false;
         _status = 'Update complete! Device is rebooting...';
@@ -163,7 +181,7 @@ class _OtaScreenState extends State<OtaScreen> {
             ] else
               const Spacer(),
             const SizedBox(height: 16),
-            if (_hasUpdate && !_updating && !_downloading)
+            if (_hasUpdate && !_updating && !_downloading && !_otaWasComplete)
               FilledButton.icon(
                 onPressed: _startUpdate,
                 icon: const Icon(Icons.download),

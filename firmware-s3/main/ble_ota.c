@@ -42,9 +42,17 @@ static void restart_cb(void *arg)
 
 static void ota_begin(uint16_t conn, const uint8_t *data, uint16_t len)
 {
-    if (len < 5 || s_state != OTA_IDLE) {
+    if (len < 5) {
         send_evt(conn, OTA_EVT_ERROR, 1);
         return;
+    }
+
+    if (s_state == OTA_RECEIVING) {
+        esp_ota_abort(s_ota_handle);
+    }
+    if (s_state != OTA_IDLE) {
+        s_state = OTA_IDLE;
+        ESP_LOGW(TAG, "Reset stale OTA state");
     }
 
     memcpy(&s_total_size, data + 1, 4);
